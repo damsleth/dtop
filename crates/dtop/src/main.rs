@@ -1,7 +1,6 @@
 use std::cmp::{max, min};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -9,6 +8,7 @@ use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
+use dtop_collector::{Collector, MacPsCollector};
 use libc::{SIGKILL, kill};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -18,10 +18,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table};
 use dtop_core::{
     DetailEntry, FilterState, MetricHistory, ProcEntry, ProcSnapshotEntry, SortBy, SortState,
-    TreeRow, median, parse_ps_line, shrink_deque,
+    TreeRow, median, shrink_deque,
 };
-
-const PS_AXO_FIELDS: &str = "pid=,ppid=,%cpu=,rss=,comm=";
 
 #[derive(Clone, Debug)]
 struct KillPrompt {
@@ -54,6 +52,7 @@ struct App {
     selected_name: Option<String>,
     metric_history: HashMap<String, MetricHistory>,
     pids_by_command: HashMap<String, Vec<i32>>,
+    collector: Box<dyn Collector>,
     kill_prompt: Option<KillPrompt>,
     kill_prompt_error: Option<String>,
 }
@@ -85,6 +84,7 @@ impl App {
             selected_name: None,
             metric_history: HashMap::new(),
             pids_by_command: HashMap::new(),
+            collector: Box::new(MacPsCollector),
             kill_prompt: None,
             kill_prompt_error: None,
         }
@@ -120,44 +120,28 @@ impl App {
     }
 
     fn get_processes(&mut self) -> Vec<ProcEntry> {
-        let output = Command::new("ps")
-            .args(["-caxo", PS_AXO_FIELDS])
-            .output();
-
-        let Ok(output) = output else {
+        let Ok(processes) = self.collector.collect_processes() else {
             self.pids_by_command.clear();
             self.process_snapshot.clear();
             return Vec::new();
         };
-        if !output.status.success() {
-            self.pids_by_command.clear();
-            self.process_snapshot.clear();
-            return Vec::new();
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
 
         let mut grouped: HashMap<String, (f64, f64, usize, Vec<i32>)> = HashMap::new();
-        let mut snapshot = Vec::new();
-        for line in stdout.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            let Some((pid, ppid, cpu, mem, command)) = parse_ps_line(line) else {
-                continue;
-            };
-            let command_name = command.clone();
-            let entry = grouped.entry(command).or_insert((0.0, 0.0, 0, Vec::new()));
-            entry.0 += cpu;
-            entry.1 += mem;
+        let mut snapshot = Vec::with_capacity(processes.len());
+        for process in processes {
+            let entry = grouped
+                .entry(process.name.clone())
+                .or_insert((0.0, 0.0, 0, Vec::new()));
+            entry.0 += process.cpu;
+            entry.1 += process.mem_mb;
             entry.2 += 1;
-            entry.3.push(pid);
+            entry.3.push(process.pid);
             snapshot.push(ProcSnapshotEntry {
-                pid,
-                ppid,
-                name: command_name,
-                cpu,
-                mem_mb: mem / 1024.0,
+                pid: process.pid,
+                ppid: process.ppid,
+                name: process.name,
+                cpu: process.cpu,
+                mem_mb: process.mem_mb,
             });
         }
         self.process_snapshot = snapshot;
@@ -165,15 +149,15 @@ impl App {
         let mut refreshed_pids_by_command: HashMap<String, Vec<i32>> = HashMap::new();
         let mut proc_list: Vec<ProcEntry> = grouped
             .into_iter()
-            .map(|(name, (cpu, mem_kb, count, pids))| {
+            .map(|(name, (cpu, mem_mb, count, pids))| {
                 refreshed_pids_by_command.insert(name.clone(), pids);
                 ProcEntry {
                     name,
                     cpu,
-                    mem_mb: mem_kb / 1024.0,
+                    mem_mb,
                     count,
                     cpu_lazy: cpu,
-                    mem_lazy: mem_kb / 1024.0,
+                    mem_lazy: mem_mb,
                 }
             })
             .collect();
@@ -348,39 +332,22 @@ impl App {
             return;
         }
 
-        let output = Command::new("ps")
-            .args(["-caxo", PS_AXO_FIELDS])
-            .output();
-        let Ok(output) = output else {
+        let Ok(processes) = self.collector.collect_processes() else {
             self.detail_info.clear();
             self.detail_command = Some(command.to_string());
             self.detail_last_update = Instant::now();
             return;
         };
-        if !output.status.success() {
-            self.detail_info.clear();
-            self.detail_command = Some(command.to_string());
-            self.detail_last_update = Instant::now();
-            return;
-        }
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
         let mut details = Vec::new();
-        for line in stdout.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            let Some((pid, _ppid, cpu, mem, comm)) = parse_ps_line(line) else {
-                continue;
-            };
-            if comm != command {
+        for process in processes {
+            if process.name != command {
                 continue;
             }
             details.push(DetailEntry {
-                pid,
-                cpu,
-                mem_mb: mem / 1024.0,
+                pid: process.pid,
+                cpu: process.cpu,
+                mem_mb: process.mem_mb,
             });
         }
         details.sort_by(|a, b| b.cpu.total_cmp(&a.cpu));

@@ -8,3 +8,4 @@ ratatui.workspace = true
 crossterm.workspace = true
 libc.workspace = true
 dtop-core = { path = "../dtop-core" }
+dtop-collector = { path = "../dtop-collector" }

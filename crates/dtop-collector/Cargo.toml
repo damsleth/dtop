@@ -1,0 +1,7 @@
+[package]
+name = "dtop-collector"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dtop-core = { path = "../dtop-core" }
