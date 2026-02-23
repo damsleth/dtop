@@ -40,6 +40,7 @@ cargo run -p dtop --features dtop-collector/linux-procfs -- --collector linux-pr
 - `+` / `-`: adjust polling interval (100ms .. 10000ms)
 - `x`: toggle lazy average mode
 - `g`: cycle graph mode (`Off` -> `List` -> `Detail` -> `Both`)
+- `1` / `2` / `3`: toggle CPU / MEM / NET panels
 - `,` / `.`: decrease/increase lazy sample window (1..50)
 - `c` / `m` / `p`: sort by CPU / memory / process name
 - `←` / `→`: cycle sort column

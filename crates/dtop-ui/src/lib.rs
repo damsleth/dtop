@@ -126,6 +126,7 @@ pub fn render_help_modal(f: &mut ratatui::Frame<'_>, data: &HelpModalData) {
         ("e", "Toggle tree view"),
         ("x", "Toggle average mode"),
         ("g", "Cycle graph mode (Off/List/Detail/Both)"),
+        ("1/2/3", "Toggle CPU/MEM/NET panels"),
         (",/.", "Adjust average sample size"),
         ("←/→", "Switch sort column"),
         ("space", "Expand/collapse tree node"),

@@ -12,10 +12,10 @@ use dtop_collector::{Collector, CollectorBackend, build_collector};
 use libc::{SIGKILL, kill};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Cell, Paragraph, Row, Table};
+use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 use dtop_core::{
     DetailEntry, FilterState, MetricHistory, ProcEntry, ProcSnapshotEntry, SortBy, SortState,
     TreeRow, median, shrink_deque,
@@ -68,11 +68,21 @@ impl GraphMode {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct NetTotalsSample {
+    rx_total: u64,
+    tx_total: u64,
+    captured_at: Instant,
+}
+
 struct App {
     poll_interval_ms: u64,
     sort_state: SortState,
     lazy_mode: bool,
     graph_mode: GraphMode,
+    show_cpu_panel: bool,
+    show_mem_panel: bool,
+    show_net_panel: bool,
     lazy_window: usize,
     debug_kill: bool,
     last_update: Instant,
@@ -93,6 +103,15 @@ struct App {
     selected_name: Option<String>,
     metric_history: HashMap<String, MetricHistory>,
     pids_by_command: HashMap<String, Vec<i32>>,
+    system_cpu_total_pct: Option<f64>,
+    system_mem_used_mb: Option<f64>,
+    system_mem_total_mb: Option<f64>,
+    system_net_rx_bps: Option<f64>,
+    system_net_tx_bps: Option<f64>,
+    system_cpu_history: VecDeque<f64>,
+    system_mem_history: VecDeque<f64>,
+    system_net_history: VecDeque<f64>,
+    previous_net_totals: Option<NetTotalsSample>,
     collector_backend: CollectorBackend,
     collector: Box<dyn Collector>,
     kill_prompt: Option<KillPrompt>,
@@ -107,6 +126,9 @@ impl App {
             sort_state: SortState::default(),
             lazy_mode: true,
             graph_mode: GraphMode::Off,
+            show_cpu_panel: false,
+            show_mem_panel: false,
+            show_net_panel: false,
             lazy_window: 10,
             debug_kill: false,
             last_update: now - Duration::from_millis(1000),
@@ -127,6 +149,15 @@ impl App {
             selected_name: None,
             metric_history: HashMap::new(),
             pids_by_command: HashMap::new(),
+            system_cpu_total_pct: None,
+            system_mem_used_mb: None,
+            system_mem_total_mb: None,
+            system_net_rx_bps: None,
+            system_net_tx_bps: None,
+            system_cpu_history: VecDeque::new(),
+            system_mem_history: VecDeque::new(),
+            system_net_history: VecDeque::new(),
+            previous_net_totals: None,
             collector_backend,
             collector,
             kill_prompt: None,
@@ -144,6 +175,9 @@ impl App {
             shrink_deque(&mut history.cpu, bounded);
             shrink_deque(&mut history.mem, bounded);
         }
+        shrink_deque(&mut self.system_cpu_history, bounded);
+        shrink_deque(&mut self.system_mem_history, bounded);
+        shrink_deque(&mut self.system_net_history, bounded);
     }
 
     fn change_sort(&mut self, sort: SortBy) {
@@ -159,6 +193,7 @@ impl App {
     fn maybe_update_processes(&mut self) {
         if self.last_update.elapsed() >= Duration::from_millis(self.poll_interval_ms) {
             self.current_processes = self.get_processes();
+            self.update_system_stats();
             if self.tree_mode {
                 self.rebuild_tree_rows();
             }
@@ -260,6 +295,53 @@ impl App {
             proc_list.reverse();
         }
         proc_list
+    }
+
+    fn update_system_stats(&mut self) {
+        let Ok(stats) = self.collector.collect_system_stats() else {
+            return;
+        };
+        let Some(stats) = stats else {
+            return;
+        };
+
+        self.system_cpu_total_pct = stats.cpu_total_pct;
+        self.system_mem_used_mb = stats.mem_used_mb;
+        self.system_mem_total_mb = stats.mem_total_mb;
+
+        if let Some(cpu) = stats.cpu_total_pct {
+            push_bounded_sample(&mut self.system_cpu_history, cpu, self.lazy_window);
+        }
+        if let (Some(used), Some(total)) = (stats.mem_used_mb, stats.mem_total_mb)
+            && total > 0.0
+        {
+            let used_pct = (used / total) * 100.0;
+            push_bounded_sample(&mut self.system_mem_history, used_pct, self.lazy_window);
+        }
+
+        let now = Instant::now();
+        if let (Some(rx_total), Some(tx_total)) = (stats.net_rx_bytes_total, stats.net_tx_bytes_total)
+        {
+            if let Some(previous) = self.previous_net_totals {
+                let elapsed = now.duration_since(previous.captured_at).as_secs_f64();
+                if elapsed > 0.0 {
+                    let rx_bps = (rx_total.saturating_sub(previous.rx_total) as f64) / elapsed;
+                    let tx_bps = (tx_total.saturating_sub(previous.tx_total) as f64) / elapsed;
+                    self.system_net_rx_bps = Some(rx_bps);
+                    self.system_net_tx_bps = Some(tx_bps);
+                    push_bounded_sample(
+                        &mut self.system_net_history,
+                        rx_bps + tx_bps,
+                        self.lazy_window,
+                    );
+                }
+            }
+            self.previous_net_totals = Some(NetTotalsSample {
+                rx_total,
+                tx_total,
+                captured_at: now,
+            });
+        }
     }
 
     fn update_filter_and_selection(&mut self) {
@@ -514,6 +596,15 @@ impl App {
             KeyCode::Char('d') | KeyCode::Char('D') => {
                 self.debug_kill = !self.debug_kill;
             }
+            KeyCode::Char('1') => {
+                self.show_cpu_panel = !self.show_cpu_panel;
+            }
+            KeyCode::Char('2') => {
+                self.show_mem_panel = !self.show_mem_panel;
+            }
+            KeyCode::Char('3') => {
+                self.show_net_panel = !self.show_net_panel;
+            }
             KeyCode::Char('c') | KeyCode::Char('C') => self.change_sort(SortBy::Cpu),
             KeyCode::Char('m') | KeyCode::Char('M') => self.change_sort(SortBy::Mem),
             KeyCode::Char('p') | KeyCode::Char('P') => self.change_sort(SortBy::Name),
@@ -764,6 +855,13 @@ impl App {
     }
 }
 
+fn push_bounded_sample(history: &mut VecDeque<f64>, value: f64, max_len: usize) {
+    history.push_back(value);
+    while history.len() > max_len {
+        history.pop_front();
+    }
+}
+
 fn parse_collector_override(args: &[String]) -> Result<Option<String>, String> {
     let mut iter = args.iter().skip(1);
     while let Some(arg) = iter.next() {
@@ -856,23 +954,44 @@ fn draw_ui(f: &mut ratatui::Frame<'_>, app: &mut App) -> usize {
         lines_before_header = 1;
     }
 
+    let mut content_area = Rect {
+        x: area.x,
+        y: area.y + lines_before_header,
+        width: area.width,
+        height: area.height.saturating_sub(lines_before_header),
+    };
+
+    let panel_count = [app.show_cpu_panel, app.show_mem_panel, app.show_net_panel]
+        .into_iter()
+        .filter(|enabled| *enabled)
+        .count() as u16;
+    if panel_count > 0 && content_area.height > 9 {
+        let panel_height = min(7, content_area.height.saturating_sub(3));
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(panel_height), Constraint::Min(1)])
+            .split(content_area);
+        render_system_panels(f, app, chunks[0], panel_count);
+        content_area = chunks[1];
+    }
+
     let value_width: u16 = if app.lazy_mode { 12 } else { 10 };
     let graph_width: u16 = 8;
     let list_graphs_enabled = app.graph_mode.show_list();
     let detail_graphs_enabled = app.graph_mode.show_detail();
     let graph_columns_visible = !app.tree_mode
         && list_graphs_enabled
-        && area.width > (value_width * 2 + graph_width * 2 + 6);
+        && content_area.width > (value_width * 2 + graph_width * 2 + 6);
     let min_name = 1u16;
     let fixed_width = value_width * 2 + 2 + if graph_columns_visible { graph_width * 2 + 2 } else { 0 };
-    let name_col_width = if area.width > fixed_width {
-        area.width - fixed_width
+    let name_col_width = if content_area.width > fixed_width {
+        content_area.width - fixed_width
     } else {
         min_name
     };
 
-    let list_top = area.y + lines_before_header;
-    let available_height = area.height.saturating_sub(lines_before_header);
+    let list_top = content_area.y;
+    let available_height = content_area.height;
     let detail_active = !app.tree_mode && app.show_extended && app.selected_name.is_some() && available_height > 1;
 
     let detail_rows = app.detail_info.len();
@@ -1069,13 +1188,10 @@ fn draw_ui(f: &mut ratatui::Frame<'_>, app: &mut App) -> usize {
 
     let table_height = visible_rows as u16 + 1;
     let table_area = Rect {
-        x: area.x,
+        x: content_area.x,
         y: list_top,
-        width: area.width,
-        height: min(
-            table_height,
-            area.height.saturating_sub(lines_before_header),
-        ),
+        width: content_area.width,
+        height: min(table_height, content_area.height),
     };
 
     let mut constraints = vec![
@@ -1098,21 +1214,21 @@ fn draw_ui(f: &mut ratatui::Frame<'_>, app: &mut App) -> usize {
     {
         app.update_process_details(&selected_name);
         let separator_y = list_top + table_height;
-        if separator_y < area.y + area.height {
-            let sep = Paragraph::new("─".repeat(area.width as usize));
+        if separator_y < content_area.y + content_area.height {
+            let sep = Paragraph::new("─".repeat(content_area.width as usize));
             let sep_area = Rect {
-                x: area.x,
+                x: content_area.x,
                 y: separator_y,
-                width: area.width,
+                width: content_area.width,
                 height: 1,
             };
             f.render_widget(sep, sep_area);
         }
 
         let detail_area = Rect {
-            x: area.x,
+            x: content_area.x,
             y: separator_y + 1,
-            width: area.width,
+            width: content_area.width,
             height: detail_height,
         };
 
@@ -1196,6 +1312,120 @@ fn draw_ui(f: &mut ratatui::Frame<'_>, app: &mut App) -> usize {
     }
 
     visible_rows
+}
+
+fn render_system_panels(f: &mut ratatui::Frame<'_>, app: &App, area: Rect, panel_count: u16) {
+    if panel_count == 0 || area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let constraints = vec![Constraint::Percentage(100 / panel_count); panel_count as usize];
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(constraints)
+        .split(area);
+
+    let mut next_idx = 0usize;
+    if app.show_cpu_panel {
+        render_cpu_panel(f, chunks[next_idx], app);
+        next_idx += 1;
+    }
+    if app.show_mem_panel {
+        render_mem_panel(f, chunks[next_idx], app);
+        next_idx += 1;
+    }
+    if app.show_net_panel {
+        render_net_panel(f, chunks[next_idx], app);
+    }
+}
+
+fn render_cpu_panel(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
+    let block = Block::default().borders(Borders::ALL).title("CPU");
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let value = app
+        .system_cpu_total_pct
+        .map(|v| format!("{v:.1}%"))
+        .unwrap_or_else(|| "n/a".to_string());
+    let graph_width = inner.width.saturating_sub(2) as usize;
+    let graph = sparkline(&app.system_cpu_history, graph_width);
+    let lines = vec![
+        Line::from(format!("Total: {value}")),
+        Line::from(graph),
+    ];
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+fn render_mem_panel(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
+    let block = Block::default().borders(Borders::ALL).title("MEM");
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let summary = match (app.system_mem_used_mb, app.system_mem_total_mb) {
+        (Some(used), Some(total)) if total > 0.0 => {
+            format!("Used: {:.1}/{:.1} GB ({:.1}%)", used / 1024.0, total / 1024.0, (used / total) * 100.0)
+        }
+        _ => "Used: n/a".to_string(),
+    };
+    let graph_width = inner.width.saturating_sub(2) as usize;
+    let graph = sparkline(&app.system_mem_history, graph_width);
+    let lines = vec![
+        Line::from(summary),
+        Line::from(graph),
+    ];
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+fn render_net_panel(f: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
+    let block = Block::default().borders(Borders::ALL).title("NET");
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let rx = app
+        .system_net_rx_bps
+        .map(format_bytes_per_second)
+        .unwrap_or_else(|| "n/a".to_string());
+    let tx = app
+        .system_net_tx_bps
+        .map(format_bytes_per_second)
+        .unwrap_or_else(|| "n/a".to_string());
+    let total = match (app.system_net_rx_bps, app.system_net_tx_bps) {
+        (Some(rx), Some(tx)) => format_bytes_per_second(rx + tx),
+        _ => "n/a".to_string(),
+    };
+    let graph_width = inner.width.saturating_sub(2) as usize;
+    let graph = sparkline(&app.system_net_history, graph_width);
+    let lines = vec![
+        Line::from(format!("RX: {rx}  TX: {tx}")),
+        Line::from(format!("Total: {total}")),
+        Line::from(graph),
+    ];
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+fn format_bytes_per_second(bytes_per_second: f64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+    if bytes_per_second >= GB {
+        format!("{:.2} GB/s", bytes_per_second / GB)
+    } else if bytes_per_second >= MB {
+        format!("{:.2} MB/s", bytes_per_second / MB)
+    } else if bytes_per_second >= KB {
+        format!("{:.1} KB/s", bytes_per_second / KB)
+    } else {
+        format!("{:.0} B/s", bytes_per_second)
+    }
 }
 
 #[cfg(test)]
