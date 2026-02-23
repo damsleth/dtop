@@ -901,8 +901,8 @@ fn draw_ui(f: &mut ratatui::Frame<'_>, app: &mut App) -> usize {
             SortBy::Mem => mem_header = format!("{direction_icon} {mem_header}"),
         }
         if app.lazy_mode {
-            cpu_header.push_str(" x̄");
-            mem_header.push_str(" x̄");
+            cpu_header.push_str(&format!(" x̄({})", app.lazy_window));
+            mem_header.push_str(&format!(" x̄({})", app.lazy_window));
         }
     }
 
