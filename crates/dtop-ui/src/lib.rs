@@ -130,7 +130,7 @@ pub fn render_help_modal(f: &mut ratatui::Frame<'_>, data: &HelpModalData) {
         (",/.", "Adjust average sample size"),
         ("←/→", "Switch sort column"),
         ("space", "Expand/collapse tree node"),
-        ("enter", "Toggle extended info"),
+        ("enter", "Toggle/pin extended info panel"),
         ("c", "Sort by CPU"),
         ("m", "Sort by Memory"),
         ("p", "Sort by Name"),

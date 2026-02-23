@@ -75,6 +75,21 @@ struct NetTotalsSample {
     captured_at: Instant,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum DetailTarget {
+    Command(String),
+    TreePid(i32),
+}
+
+#[derive(Clone, Debug)]
+struct DetailPanel {
+    target: DetailTarget,
+    title: String,
+    summary: String,
+    rows: Vec<DetailEntry>,
+    trend_key: Option<String>,
+}
+
 struct App {
     poll_interval_ms: u64,
     sort_state: SortState,
@@ -90,17 +105,13 @@ struct App {
     current_processes: Vec<ProcEntry>,
     filtered_indices: Vec<usize>,
     selected_index: Option<usize>,
-    show_extended: bool,
     filter_state: FilterState,
-    detail_info: Vec<DetailEntry>,
-    detail_command: Option<String>,
-    detail_last_update: Instant,
+    detail_targets: Vec<DetailTarget>,
     process_snapshot: Vec<ProcSnapshotEntry>,
     tree_rows: Vec<TreeRow>,
     tree_mode: bool,
     expanded_pids: HashSet<i32>,
     previous_scroll_anchor: Option<usize>,
-    selected_name: Option<String>,
     metric_history: HashMap<String, MetricHistory>,
     pids_by_command: HashMap<String, Vec<i32>>,
     system_cpu_total_pct: Option<f64>,
@@ -136,17 +147,13 @@ impl App {
             current_processes: Vec::new(),
             filtered_indices: Vec::new(),
             selected_index: None,
-            show_extended: false,
             filter_state: FilterState::default(),
-            detail_info: Vec::new(),
-            detail_command: None,
-            detail_last_update: now - Duration::from_millis(1000),
+            detail_targets: Vec::new(),
             process_snapshot: Vec::new(),
             tree_rows: Vec::new(),
             tree_mode: false,
             expanded_pids: HashSet::new(),
             previous_scroll_anchor: None,
-            selected_name: None,
             metric_history: HashMap::new(),
             pids_by_command: HashMap::new(),
             system_cpu_total_pct: None,
@@ -193,6 +200,7 @@ impl App {
     fn maybe_update_processes(&mut self) {
         if self.last_update.elapsed() >= Duration::from_millis(self.poll_interval_ms) {
             self.current_processes = self.get_processes();
+            self.prune_detail_targets();
             self.update_system_stats();
             if self.tree_mode {
                 self.rebuild_tree_rows();
@@ -367,29 +375,8 @@ impl App {
 
         if self.filtered_indices.is_empty() {
             self.selected_index = None;
-            self.selected_name = None;
-            self.show_extended = false;
             self.previous_scroll_anchor = None;
-            self.detail_info.clear();
-            self.detail_command = None;
             return;
-        }
-
-        if self.show_extended && let Some(selected_name) = self.selected_name.as_ref() {
-            if let Some(new_pos) = self.filtered_indices.iter().position(|&i| {
-                self.current_processes
-                    .get(i)
-                    .map(|p| &p.name == selected_name)
-                    .unwrap_or(false)
-            }) {
-                self.selected_index = Some(new_pos);
-            } else {
-                self.show_extended = false;
-                self.selected_name = None;
-                self.selected_index = None;
-                self.detail_info.clear();
-                self.detail_command = None;
-            }
         }
 
         if let Some(idx) = self.selected_index {
@@ -427,65 +414,156 @@ impl App {
             len - 1
         };
         self.selected_index = Some(new_idx);
-        if !self.tree_mode && self.show_extended {
-            if let Some(proc) = self.selected_process() {
-                let selected_name = proc.name.clone();
-                self.selected_name = Some(selected_name.clone());
-                self.update_process_details(&selected_name);
-            }
-        } else {
-            self.selected_name = None;
-        }
     }
 
     fn clear_search_and_selection(&mut self) {
         self.filter_state.search_mode = false;
         self.filter_state.search_query.clear();
         self.selected_index = None;
-        self.show_extended = false;
         self.previous_scroll_anchor = None;
-        self.detail_info.clear();
-        self.detail_command = None;
-        self.selected_name = None;
     }
 
-    fn update_process_details(&mut self, command: &str) {
-        if command.is_empty() {
-            self.detail_info.clear();
-            self.detail_command = None;
-            return;
+    fn selected_detail_target(&self) -> Option<DetailTarget> {
+        if self.tree_mode {
+            let idx = self.selected_index?;
+            let row = self.tree_rows.get(idx)?;
+            Some(DetailTarget::TreePid(row.pid))
+        } else {
+            let proc = self.selected_process()?;
+            Some(DetailTarget::Command(proc.name.clone()))
         }
-        if self.detail_command.as_deref() == Some(command)
-            && self.detail_last_update.elapsed() < Duration::from_millis(self.poll_interval_ms)
-        {
-            return;
+    }
+
+    fn is_detail_target_open(&self, target: &DetailTarget) -> bool {
+        self.detail_targets.iter().any(|existing| existing == target)
+    }
+
+    fn toggle_detail_target(&mut self, target: DetailTarget) {
+        if let Some(pos) = self.detail_targets.iter().position(|existing| *existing == target) {
+            self.detail_targets.remove(pos);
+        } else {
+            self.detail_targets.push(target);
+        }
+    }
+
+    fn toggle_extended_selected(&mut self) {
+        if let Some(target) = self.selected_detail_target() {
+            self.toggle_detail_target(target);
+        }
+    }
+
+    fn is_command_detail_open(&self, command: &str) -> bool {
+        self.detail_targets
+            .iter()
+            .any(|target| matches!(target, DetailTarget::Command(name) if name == command))
+    }
+
+    fn build_detail_panels(&self) -> Vec<DetailPanel> {
+        let mut panels = Vec::new();
+        for target in &self.detail_targets {
+            let panel = match target {
+                DetailTarget::Command(command) => self.build_command_detail_panel(command),
+                DetailTarget::TreePid(pid) => self.build_tree_detail_panel(*pid),
+            };
+            if let Some(panel) = panel {
+                panels.push(panel);
+            }
+        }
+        panels
+    }
+
+    fn prune_detail_targets(&mut self) {
+        let live_pids: HashSet<i32> = self.process_snapshot.iter().map(|proc| proc.pid).collect();
+        let live_commands: HashSet<&str> = self
+            .process_snapshot
+            .iter()
+            .map(|proc| proc.name.as_str())
+            .collect();
+        self.detail_targets.retain(|target| match target {
+            DetailTarget::Command(command) => live_commands.contains(command.as_str()),
+            DetailTarget::TreePid(pid) => live_pids.contains(pid),
+        });
+    }
+
+    fn build_command_detail_panel(&self, command: &str) -> Option<DetailPanel> {
+        let mut rows: Vec<DetailEntry> = self
+            .process_snapshot
+            .iter()
+            .filter(|proc| proc.name == command)
+            .map(|proc| DetailEntry {
+                pid: proc.pid,
+                cpu: proc.cpu,
+                mem_mb: proc.mem_mb,
+            })
+            .collect();
+        if rows.is_empty() {
+            return None;
+        }
+        rows.sort_by(|a, b| b.cpu.total_cmp(&a.cpu));
+        let total_cpu = rows.iter().map(|r| r.cpu).sum::<f64>();
+        let total_mem = rows.iter().map(|r| r.mem_mb).sum::<f64>();
+        Some(DetailPanel {
+            target: DetailTarget::Command(command.to_string()),
+            title: format!("Command: {command}"),
+            summary: format!(
+                "{} PIDs  Total CPU {:>6.2}%  Total MEM {:>8.2} MB",
+                rows.len(),
+                total_cpu,
+                total_mem
+            ),
+            rows,
+            trend_key: Some(command.to_string()),
+        })
+    }
+
+    fn build_tree_detail_panel(&self, root_pid: i32) -> Option<DetailPanel> {
+        let by_pid: HashMap<i32, &ProcSnapshotEntry> =
+            self.process_snapshot.iter().map(|proc| (proc.pid, proc)).collect();
+        let root = by_pid.get(&root_pid)?;
+
+        let mut children: HashMap<i32, Vec<i32>> = HashMap::new();
+        for proc in &self.process_snapshot {
+            children.entry(proc.ppid).or_default().push(proc.pid);
         }
 
-        let Ok(processes) = self.collector.collect_processes() else {
-            self.detail_info.clear();
-            self.detail_command = Some(command.to_string());
-            self.detail_last_update = Instant::now();
-            return;
-        };
-
-        let mut details = Vec::new();
-        for process in processes {
-            if process.name != command {
+        let mut stack = vec![root_pid];
+        let mut visited = HashSet::new();
+        let mut rows = Vec::new();
+        while let Some(pid) = stack.pop() {
+            if !visited.insert(pid) {
                 continue;
             }
-            details.push(DetailEntry {
-                pid: process.pid,
-                cpu: process.cpu,
-                mem_mb: process.mem_mb,
-            });
+            if let Some(proc) = by_pid.get(&pid) {
+                rows.push(DetailEntry {
+                    pid: proc.pid,
+                    cpu: proc.cpu,
+                    mem_mb: proc.mem_mb,
+                });
+                if let Some(child_ids) = children.get(&pid) {
+                    for child in child_ids {
+                        stack.push(*child);
+                    }
+                }
+            }
         }
-        details.sort_by(|a, b| b.cpu.total_cmp(&a.cpu));
-        self.detail_info = details;
-        self.detail_command = Some(command.to_string());
-        self.detail_last_update = Instant::now();
+        rows.sort_by(|a, b| b.cpu.total_cmp(&a.cpu));
+        let total_cpu = rows.iter().map(|r| r.cpu).sum::<f64>();
+        let total_mem = rows.iter().map(|r| r.mem_mb).sum::<f64>();
+        Some(DetailPanel {
+            target: DetailTarget::TreePid(root_pid),
+            title: format!("Tree: {} ({root_pid})", root.name),
+            summary: format!(
+                "{} processes  Total CPU {:>6.2}%  Total MEM {:>8.2} MB",
+                rows.len(),
+                total_cpu,
+                total_mem
+            ),
+            rows,
+            trend_key: None,
+        })
     }
 
-    fn get_pids_for_command(&mut self, command: &str) -> Vec<i32> {
+    fn get_pids_for_command(&self, command: &str) -> Vec<i32> {
         if command.is_empty() {
             return Vec::new();
         }
@@ -494,26 +572,11 @@ impl App {
         {
             return pids.clone();
         }
-        self.detail_command = None;
-        self.detail_last_update = Instant::now() - Duration::from_millis(self.poll_interval_ms);
-        self.update_process_details(command);
-        self.detail_info.iter().map(|d| d.pid).collect()
-    }
-
-    fn toggle_extended_selected(&mut self) {
-        if let Some(proc) = self.selected_process() {
-            let selected = proc.name.clone();
-            if self.show_extended && self.detail_command.as_deref() == Some(selected.as_str()) {
-                self.show_extended = false;
-                self.detail_info.clear();
-                self.detail_command = None;
-                self.selected_name = None;
-            } else {
-                self.show_extended = true;
-                self.selected_name = Some(selected.clone());
-                self.update_process_details(&selected);
-            }
-        }
+        self.process_snapshot
+            .iter()
+            .filter(|proc| proc.name == command)
+            .map(|proc| proc.pid)
+            .collect()
     }
 
     fn handle_key(&mut self, key: KeyCode, _modifiers: KeyModifiers, visible_rows: usize) -> bool {
@@ -544,10 +607,6 @@ impl App {
             }
             KeyCode::Char('e') | KeyCode::Char('E') => {
                 self.tree_mode = !self.tree_mode;
-                self.show_extended = false;
-                self.detail_info.clear();
-                self.detail_command = None;
-                self.selected_name = None;
                 self.previous_scroll_anchor = None;
                 if self.tree_mode {
                     self.filter_state.search_mode = false;
@@ -630,11 +689,7 @@ impl App {
             KeyCode::PageUp => self.move_selection(-1, visible_rows, true),
             KeyCode::Down => self.move_selection(1, visible_rows, false),
             KeyCode::Up => self.move_selection(-1, visible_rows, false),
-            KeyCode::Enter => {
-                if !self.tree_mode {
-                    self.toggle_extended_selected();
-                }
-            }
+            KeyCode::Enter => self.toggle_extended_selected(),
             KeyCode::Char(' ') => {
                 if self.tree_mode {
                     self.toggle_tree_selected();
@@ -657,21 +712,13 @@ impl App {
             KeyCode::Backspace => {
                 self.filter_state.search_query.pop();
                 self.selected_index = None;
-                self.show_extended = false;
                 self.previous_scroll_anchor = None;
-                self.detail_info.clear();
-                self.detail_command = None;
-                self.selected_name = None;
             }
             KeyCode::Char(c) => {
                 if is_search_input_char(c) {
                     self.filter_state.search_query.push(c);
                     self.selected_index = None;
-                    self.show_extended = false;
                     self.previous_scroll_anchor = None;
-                    self.detail_info.clear();
-                    self.detail_command = None;
-                    self.selected_name = None;
                 }
             }
             KeyCode::Down => self.move_selection(1, 1, false),
@@ -992,21 +1039,12 @@ fn draw_ui(f: &mut ratatui::Frame<'_>, app: &mut App) -> usize {
 
     let list_top = content_area.y;
     let available_height = content_area.height;
-    let detail_active = !app.tree_mode && app.show_extended && app.selected_name.is_some() && available_height > 1;
-
-    let detail_rows = app.detail_info.len();
+    let detail_panels = app.build_detail_panels();
+    let detail_active = !detail_panels.is_empty() && available_height > 1;
     let mut detail_height = 0u16;
     if detail_active {
-        let mut required = 1u16;
-        if detail_graphs_enabled {
-            required = required.saturating_add(2);
-        }
-        if detail_rows > 0 {
-            required = required.saturating_add(1 + detail_rows as u16);
-        } else {
-            required = required.saturating_add(1);
-        }
-        let requested = max(5, required as usize) as u16;
+        let per_panel = if detail_graphs_enabled { 7u16 } else { 5u16 };
+        let requested = max(5, (detail_panels.len() as u16).saturating_mul(per_panel)) as u16;
         let max_height = available_height.saturating_sub(2);
         detail_height = min(requested, max_height);
     }
@@ -1122,6 +1160,9 @@ fn draw_ui(f: &mut ratatui::Frame<'_>, app: &mut App) -> usize {
                 if app.selected_index == Some(list_index) {
                     style = style.add_modifier(Modifier::REVERSED);
                 }
+                if app.is_detail_target_open(&DetailTarget::TreePid(proc.pid)) {
+                    style = style.add_modifier(Modifier::BOLD);
+                }
 
                 rows.push(
                     Row::new(vec![
@@ -1161,7 +1202,7 @@ fn draw_ui(f: &mut ratatui::Frame<'_>, app: &mut App) -> usize {
                 }
 
                 if app.selected_index == Some(list_index)
-                    || (app.show_extended && app.selected_name.as_deref() == Some(proc.name.as_str()))
+                    || app.is_command_detail_open(&proc.name)
                 {
                     style = style.add_modifier(Modifier::REVERSED);
                 }
@@ -1209,10 +1250,7 @@ fn draw_ui(f: &mut ratatui::Frame<'_>, app: &mut App) -> usize {
     .column_spacing(1);
     f.render_widget(table, table_area);
 
-    if detail_height > 0
-        && let Some(selected_name) = app.selected_name.clone()
-    {
-        app.update_process_details(&selected_name);
+    if detail_height > 0 {
         let separator_y = list_top + table_height;
         if separator_y < content_area.y + content_area.height {
             let sep = Paragraph::new("─".repeat(content_area.width as usize));
@@ -1231,58 +1269,7 @@ fn draw_ui(f: &mut ratatui::Frame<'_>, app: &mut App) -> usize {
             width: content_area.width,
             height: detail_height,
         };
-
-        let mut detail_lines = Vec::new();
-        detail_lines.push(Line::from(vec![Span::styled(
-            format!("Extended Info: {selected_name}"),
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )]));
-
-        if detail_graphs_enabled {
-            let detail_graph_width = detail_area.width.saturating_sub(14) as usize;
-            let (cpu_graph, mem_graph) = app
-                .metric_history
-                .get(&selected_name)
-                .map(|history| {
-                    (
-                        sparkline(&history.cpu, detail_graph_width),
-                        sparkline(&history.mem, detail_graph_width),
-                    )
-                })
-                .unwrap_or_else(|| {
-                    (
-                        " ".repeat(detail_graph_width),
-                        " ".repeat(detail_graph_width),
-                    )
-                });
-            detail_lines.push(Line::from(format!("CPU trend: {cpu_graph}")));
-            detail_lines.push(Line::from(format!("MEM trend: {mem_graph}")));
-        }
-
-        if detail_area.height > 1 {
-            detail_lines.push(Line::from(Span::styled(
-                "PID       CPU%      MEM(MB)",
-                Style::default().add_modifier(Modifier::BOLD),
-            )));
-        }
-
-        let max_rows = detail_area.height.saturating_sub(2) as usize;
-        if app.detail_info.is_empty() {
-            if max_rows > 0 {
-                detail_lines.push(Line::from("No processes found"));
-            }
-        } else {
-            for detail in app.detail_info.iter().take(max_rows) {
-                detail_lines.push(Line::from(format!(
-                    "{:>6}   {:>6.2}     {:>7.2}",
-                    detail.pid, detail.cpu, detail.mem_mb
-                )));
-            }
-        }
-
-        f.render_widget(Paragraph::new(detail_lines), detail_area);
+        render_detail_panels(f, app, detail_area, &detail_panels, detail_graphs_enabled);
     }
 
     if app.show_help {
@@ -1312,6 +1299,88 @@ fn draw_ui(f: &mut ratatui::Frame<'_>, app: &mut App) -> usize {
     }
 
     visible_rows
+}
+
+fn render_detail_panels(
+    f: &mut ratatui::Frame<'_>,
+    app: &App,
+    area: Rect,
+    panels: &[DetailPanel],
+    detail_graphs_enabled: bool,
+) {
+    if panels.is_empty() || area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let max_lines = area.height as usize;
+
+    for (i, panel) in panels.iter().enumerate() {
+        if lines.len() >= max_lines {
+            break;
+        }
+        if i > 0
+            && lines.len() < max_lines
+        {
+            lines.push(Line::from(String::new()));
+        }
+
+        let label = match panel.target {
+            DetailTarget::Command(_) => "PID Group",
+            DetailTarget::TreePid(_) => "Tree",
+        };
+        if lines.len() < max_lines {
+            lines.push(Line::from(Span::styled(
+                format!("{label}: {}", panel.title),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )));
+        }
+        if lines.len() < max_lines {
+            lines.push(Line::from(panel.summary.clone()));
+        }
+
+        if detail_graphs_enabled
+            && let Some(key) = panel.trend_key.as_ref()
+        {
+            let graph_width = area.width.saturating_sub(14) as usize;
+            let (cpu_graph, mem_graph) = app
+                .metric_history
+                .get(key)
+                .map(|history| {
+                    (
+                        sparkline(&history.cpu, graph_width),
+                        sparkline(&history.mem, graph_width),
+                    )
+                })
+                .unwrap_or_else(|| (" ".repeat(graph_width), " ".repeat(graph_width)));
+            if lines.len() < max_lines {
+                lines.push(Line::from(format!("CPU trend: {cpu_graph}")));
+            }
+            if lines.len() < max_lines {
+                lines.push(Line::from(format!("MEM trend: {mem_graph}")));
+            }
+        }
+
+        if lines.len() < max_lines {
+            lines.push(Line::from(Span::styled(
+                "PID       CPU%      MEM(MB)",
+                Style::default().add_modifier(Modifier::BOLD),
+            )));
+        }
+        for detail in panel.rows.iter().take(5) {
+            if lines.len() >= max_lines {
+                break;
+            }
+            lines.push(Line::from(format!(
+                "{:>6}   {:>6.2}     {:>7.2}",
+                detail.pid, detail.cpu, detail.mem_mb
+            )));
+        }
+    }
+
+    f.render_widget(Paragraph::new(lines), area);
 }
 
 fn render_system_panels(f: &mut ratatui::Frame<'_>, app: &App, area: Rect, panel_count: u16) {
@@ -1430,7 +1499,7 @@ fn format_bytes_per_second(bytes_per_second: f64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{App, CollectorBackend, SortBy};
+    use super::{App, CollectorBackend, DetailTarget, SortBy};
     use crossterm::event::{KeyCode, KeyModifiers};
     use dtop_collector::{Collector, ProcessRecord};
     use std::io;
@@ -1491,16 +1560,58 @@ mod tests {
     }
 
     #[test]
-    fn builds_detail_rows_from_collector_fixture() {
+    fn builds_command_detail_panel_from_fixture() {
         let collector = Box::new(MockCollector {
             rows: fixture_rows(),
         });
         let mut app = App::new(CollectorBackend::MacPs, collector);
+        app.get_processes();
 
-        app.update_process_details("node");
-        assert_eq!(app.detail_info.len(), 2);
-        assert_eq!(app.detail_info[0].pid, 101);
-        assert_eq!(app.detail_info[1].pid, 102);
+        let panel = app
+            .build_command_detail_panel("node")
+            .expect("expected command panel");
+        assert_eq!(panel.rows.len(), 2);
+        assert_eq!(panel.rows[0].pid, 101);
+        assert_eq!(panel.rows[1].pid, 102);
+        assert!(panel.summary.contains("Total CPU"));
+    }
+
+    #[test]
+    fn builds_tree_detail_panel_with_subtree_aggregate() {
+        let collector = Box::new(MockCollector {
+            rows: vec![
+                ProcessRecord {
+                    pid: 1,
+                    ppid: 0,
+                    name: "launchd".to_string(),
+                    cpu: 1.0,
+                    mem_mb: 100.0,
+                },
+                ProcessRecord {
+                    pid: 10,
+                    ppid: 1,
+                    name: "alpha".to_string(),
+                    cpu: 10.0,
+                    mem_mb: 10.0,
+                },
+                ProcessRecord {
+                    pid: 11,
+                    ppid: 10,
+                    name: "child".to_string(),
+                    cpu: 2.0,
+                    mem_mb: 1.0,
+                },
+            ],
+        });
+        let mut app = App::new(CollectorBackend::MacPs, collector);
+        app.get_processes();
+
+        let panel = app
+            .build_tree_detail_panel(10)
+            .expect("expected tree panel");
+        assert_eq!(panel.rows.len(), 2);
+        assert!(panel.summary.contains("2 processes"));
+        assert!(panel.summary.contains("12.00"));
     }
 
     #[test]
@@ -1587,5 +1698,63 @@ mod tests {
         app.handle_key(KeyCode::Char(' '), KeyModifiers::NONE, 10);
         assert!(!app.expanded_pids.contains(&10));
         assert_eq!(app.tree_rows.len(), 1);
+    }
+
+    #[test]
+    fn enter_toggles_multiple_detail_targets_in_both_modes() {
+        let collector = Box::new(MockCollector {
+            rows: vec![
+                ProcessRecord {
+                    pid: 1,
+                    ppid: 0,
+                    name: "launchd".to_string(),
+                    cpu: 1.0,
+                    mem_mb: 100.0,
+                },
+                ProcessRecord {
+                    pid: 10,
+                    ppid: 1,
+                    name: "node".to_string(),
+                    cpu: 10.0,
+                    mem_mb: 10.0,
+                },
+                ProcessRecord {
+                    pid: 11,
+                    ppid: 1,
+                    name: "bash".to_string(),
+                    cpu: 5.0,
+                    mem_mb: 5.0,
+                },
+                ProcessRecord {
+                    pid: 12,
+                    ppid: 10,
+                    name: "child".to_string(),
+                    cpu: 2.0,
+                    mem_mb: 1.0,
+                },
+            ],
+        });
+        let mut app = App::new(CollectorBackend::MacPs, collector);
+        app.current_processes = app.get_processes();
+        app.update_filter_and_selection();
+        app.selected_index = Some(0);
+
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE, 10);
+        assert_eq!(app.detail_targets.len(), 1);
+        assert!(matches!(app.detail_targets[0], DetailTarget::Command(_)));
+
+        app.selected_index = Some(1);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE, 10);
+        assert_eq!(app.detail_targets.len(), 2);
+
+        app.tree_mode = true;
+        app.rebuild_tree_rows();
+        app.selected_index = Some(0);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE, 10);
+        assert!(
+            app.detail_targets
+                .iter()
+                .any(|target| matches!(target, DetailTarget::TreePid(_)))
+        );
     }
 }
