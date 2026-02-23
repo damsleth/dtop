@@ -46,6 +46,7 @@ cargo run -p dtop --features dtop-collector/linux-procfs -- --collector linux-pr
 - `r`: reverse sort direction
 - `↑` / `↓`: move selection
 - `PageUp` / `PageDown`: page selection
+- `space`: expand/collapse selected tree node
 - `enter`: toggle extended PID details for selected row
 - `f`: filter/search mode
 - `k`: open kill confirmation for selected process name

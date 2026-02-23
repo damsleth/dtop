@@ -419,11 +419,6 @@ impl App {
     }
 
     fn toggle_extended_selected(&mut self) {
-        if self.tree_mode {
-            self.toggle_tree_selected();
-            return;
-        }
-
         if let Some(proc) = self.selected_process() {
             let selected = proc.name.clone();
             if self.show_extended && self.detail_command.as_deref() == Some(selected.as_str()) {
@@ -523,28 +518,20 @@ impl App {
             KeyCode::Char('m') | KeyCode::Char('M') => self.change_sort(SortBy::Mem),
             KeyCode::Char('p') | KeyCode::Char('P') => self.change_sort(SortBy::Name),
             KeyCode::Left => {
-                if self.tree_mode {
-                    self.set_tree_selected_expanded(false);
-                } else {
-                    let next = match self.sort_state.by {
-                        SortBy::Cpu => SortBy::Name,
-                        SortBy::Mem => SortBy::Cpu,
-                        SortBy::Name => SortBy::Mem,
-                    };
-                    self.change_sort(next);
-                }
+                let next = match self.sort_state.by {
+                    SortBy::Cpu => SortBy::Name,
+                    SortBy::Mem => SortBy::Cpu,
+                    SortBy::Name => SortBy::Mem,
+                };
+                self.change_sort(next);
             }
             KeyCode::Right => {
-                if self.tree_mode {
-                    self.set_tree_selected_expanded(true);
-                } else {
-                    let next = match self.sort_state.by {
-                        SortBy::Cpu => SortBy::Mem,
-                        SortBy::Mem => SortBy::Name,
-                        SortBy::Name => SortBy::Cpu,
-                    };
-                    self.change_sort(next);
-                }
+                let next = match self.sort_state.by {
+                    SortBy::Cpu => SortBy::Mem,
+                    SortBy::Mem => SortBy::Name,
+                    SortBy::Name => SortBy::Cpu,
+                };
+                self.change_sort(next);
             }
             KeyCode::Char('.') => self.set_lazy_window(self.lazy_window + 1),
             KeyCode::Char(',') => self.set_lazy_window(self.lazy_window.saturating_sub(1)),
@@ -552,7 +539,16 @@ impl App {
             KeyCode::PageUp => self.move_selection(-1, visible_rows, true),
             KeyCode::Down => self.move_selection(1, visible_rows, false),
             KeyCode::Up => self.move_selection(-1, visible_rows, false),
-            KeyCode::Enter => self.toggle_extended_selected(),
+            KeyCode::Enter => {
+                if !self.tree_mode {
+                    self.toggle_extended_selected();
+                }
+            }
+            KeyCode::Char(' ') => {
+                if self.tree_mode {
+                    self.toggle_tree_selected();
+                }
+            }
             KeyCode::Char('f') | KeyCode::Char('F') => {
                 self.filter_state.search_mode = true;
             }
@@ -763,25 +759,6 @@ impl App {
             self.expanded_pids.remove(&pid);
         } else {
             self.expanded_pids.insert(pid);
-        }
-        self.rebuild_tree_rows();
-    }
-
-    fn set_tree_selected_expanded(&mut self, expand: bool) {
-        let Some(idx) = self.selected_index else {
-            return;
-        };
-        let Some(row) = self.tree_rows.get(idx) else {
-            return;
-        };
-        if !row.has_children {
-            return;
-        }
-
-        if expand {
-            self.expanded_pids.insert(row.pid);
-        } else {
-            self.expanded_pids.remove(&row.pid);
         }
         self.rebuild_tree_rows();
     }
@@ -1224,6 +1201,7 @@ fn draw_ui(f: &mut ratatui::Frame<'_>, app: &mut App) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{App, CollectorBackend, SortBy};
+    use crossterm::event::{KeyCode, KeyModifiers};
     use dtop_collector::{Collector, ProcessRecord};
     use std::io;
 
@@ -1344,5 +1322,40 @@ mod tests {
         app.rebuild_tree_rows();
         let ascending: Vec<i32> = app.tree_rows.iter().map(|r| r.pid).collect();
         assert_eq!(ascending, vec![10, 11, 12, 20]);
+    }
+
+    #[test]
+    fn space_toggles_expansion_in_tree_view() {
+        let collector = Box::new(MockCollector {
+            rows: vec![
+                ProcessRecord {
+                    pid: 10,
+                    ppid: 1,
+                    name: "alpha".to_string(),
+                    cpu: 10.0,
+                    mem_mb: 10.0,
+                },
+                ProcessRecord {
+                    pid: 11,
+                    ppid: 10,
+                    name: "alpha-child".to_string(),
+                    cpu: 2.0,
+                    mem_mb: 1.0,
+                },
+            ],
+        });
+        let mut app = App::new(CollectorBackend::MacPs, collector);
+        app.get_processes();
+        app.tree_mode = true;
+        app.rebuild_tree_rows();
+        app.selected_index = Some(0);
+
+        app.handle_key(KeyCode::Char(' '), KeyModifiers::NONE, 10);
+        assert!(app.expanded_pids.contains(&10));
+        assert_eq!(app.tree_rows.len(), 2);
+
+        app.handle_key(KeyCode::Char(' '), KeyModifiers::NONE, 10);
+        assert!(!app.expanded_pids.contains(&10));
+        assert_eq!(app.tree_rows.len(), 1);
     }
 }
