@@ -9,3 +9,4 @@ crossterm.workspace = true
 libc.workspace = true
 dtop-core = { path = "../dtop-core" }
 dtop-collector = { path = "../dtop-collector" }
+dtop-ui = { path = "../dtop-ui" }

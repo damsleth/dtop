@@ -12,13 +12,17 @@ use dtop_collector::{Collector, MacPsCollector};
 use libc::{SIGKILL, kill};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table};
+use ratatui::widgets::{Cell, Paragraph, Row, Table};
 use dtop_core::{
     DetailEntry, FilterState, MetricHistory, ProcEntry, ProcSnapshotEntry, SortBy, SortState,
     TreeRow, median, shrink_deque,
+};
+use dtop_ui::{
+    HelpModalData, KillModalData, is_ctrl_c_quit, is_search_input_char, render_help_modal,
+    render_kill_modal, sort_header_style, truncate_to_width,
 };
 
 #[derive(Clone, Debug)]
@@ -524,7 +528,7 @@ impl App {
                 self.selected_name = None;
             }
             KeyCode::Char(c) => {
-                if c.is_ascii_graphic() || c == ' ' {
+                if is_search_input_char(c) {
                     self.filter_state.search_query.push(c);
                     self.selected_index = None;
                     self.show_extended = false;
@@ -740,9 +744,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             && let Event::Key(key_event) = event::read()?
             && key_event.kind == KeyEventKind::Press
         {
-            if key_event.code == KeyCode::Char('c')
-                && key_event.modifiers.contains(KeyModifiers::CONTROL)
-            {
+            if is_ctrl_c_quit(key_event.code, key_event.modifiers) {
                 should_quit = true;
                 continue;
             }
@@ -1047,176 +1049,28 @@ fn draw_ui(f: &mut ratatui::Frame<'_>, app: &mut App) -> usize {
     }
 
     if app.show_help {
-        render_help_modal(f, app);
+        let mut sort_label = app.sort_state.by.label().to_string();
+        if app.lazy_mode {
+            sort_label.push_str(" average (x̄)");
+        }
+        let help_data = HelpModalData {
+            poll_interval_ms: app.poll_interval_ms,
+            mode_label: if app.tree_mode { "Tree" } else { "List" }.to_string(),
+            sort_label,
+            lazy_window: app.lazy_window,
+            kill_debug_enabled: app.debug_kill,
+        };
+        render_help_modal(f, &help_data);
     }
-    if app.kill_prompt.is_some() {
-        render_kill_modal(f, app);
+    if let Some(prompt) = app.kill_prompt.as_ref() {
+        let kill_data = KillModalData {
+            command: &prompt.command,
+            pids: &prompt.pids,
+            debug_summary: prompt.debug_summary.as_deref(),
+            error: app.kill_prompt_error.as_deref(),
+        };
+        render_kill_modal(f, &kill_data);
     }
 
     visible_rows
-}
-
-fn sort_header_style(active: bool) -> Style {
-    let mut style = Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
-    if active {
-        style = style.add_modifier(Modifier::REVERSED);
-    }
-    style
-}
-
-fn truncate_to_width(input: &str, max_width: usize) -> String {
-    if max_width == 0 {
-        return String::new();
-    }
-    input.chars().take(max_width).collect()
-}
-
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let popup_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(area);
-
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(popup_layout[1])[1]
-}
-
-fn render_help_modal(f: &mut ratatui::Frame<'_>, app: &App) {
-    let logo = [
-        "     _ _              ",
-        "  __| | |_ ___  _ __  ",
-        " / _` | __/ _ \\| '_ \\ ",
-        "| (_| | || (_) | |_) |",
-        " \\__,_|\\__\\___/| .__/ ",
-        "    @damsleth's|_|top ",
-    ];
-    let shortcuts = [
-        ("+/-", "Adjust polling interval"),
-        ("↑/↓", "Select process row"),
-        ("e", "Toggle tree view"),
-        ("x", "Toggle average mode"),
-        (",/.", "Adjust average sample size"),
-        ("←/→", "Switch sort column"),
-        ("enter", "Toggle extended info / tree node"),
-        ("c", "Sort by CPU"),
-        ("m", "Sort by Memory"),
-        ("p", "Sort by Name"),
-        ("r", "Reverse sort"),
-        ("f", "Filter processes"),
-        ("k", "Kill highlighted process"),
-        ("d", "Toggle kill debug info"),
-        ("esc/?", "Help or close search"),
-        ("q", "Quit"),
-    ];
-
-    let mut sort_label = app.sort_state.by.label().to_string();
-    if app.lazy_mode {
-        sort_label.push_str(" average (x̄)");
-    }
-    let status_lines = [
-        format!("Poll interval: {}ms", app.poll_interval_ms),
-        format!(
-            "Mode: {}",
-            if app.tree_mode { "Tree" } else { "List" }
-        ),
-        format!("Sort: {sort_label}"),
-        format!("# Average Samples: {}", app.lazy_window),
-        format!(
-            "Kill debug: {}",
-            if app.debug_kill { "ON" } else { "OFF" }
-        ),
-    ];
-
-    let modal = centered_rect(70, 80, f.area());
-    f.render_widget(Clear, modal);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::White))
-        .title("Help");
-    f.render_widget(block.clone(), modal);
-    let inner = block.inner(modal);
-
-    let mut lines = Vec::new();
-    for line in logo {
-        lines.push(Line::from(Span::styled(
-            line,
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )));
-    }
-    lines.push(Line::from(""));
-    for status in status_lines {
-        lines.push(Line::from(Span::styled(
-            status,
-            Style::default().fg(Color::Green),
-        )));
-    }
-    lines.push(Line::from(""));
-    for (key, desc) in shortcuts {
-        lines.push(Line::from(vec![
-            Span::styled(format!("{key:<7}"), Style::default().fg(Color::White)),
-            Span::raw(desc),
-        ]));
-    }
-    f.render_widget(Paragraph::new(lines), inner);
-}
-
-fn render_kill_modal(f: &mut ratatui::Frame<'_>, app: &App) {
-    let Some(prompt) = app.kill_prompt.as_ref() else {
-        return;
-    };
-
-    let mut lines = vec![
-        "Send SIGKILL?".to_string(),
-        format!("Process: {}", prompt.command),
-    ];
-
-    if prompt.pids.is_empty() {
-        lines.push("No PIDs found".to_string());
-    } else {
-        let mut current = String::from("PIDs: ");
-        let max_width = 50usize;
-        for pid in &prompt.pids {
-            let pid_str = pid.to_string();
-            let sep = if current.ends_with(": ") { "" } else { ", " };
-            let candidate = format!("{current}{sep}{pid_str}");
-            if candidate.chars().count() > max_width {
-                lines.push(current);
-                current = format!("      {pid_str}");
-            } else {
-                current = candidate;
-            }
-        }
-        lines.push(current);
-    }
-
-    lines.push("Enter = confirm   Esc = cancel".to_string());
-    if let Some(summary) = prompt.debug_summary.as_ref() {
-        lines.push(summary.clone());
-    }
-    if let Some(err) = app.kill_prompt_error.as_ref() {
-        lines.push(format!("Error: {err}"));
-    }
-
-    let modal = centered_rect(60, 40, f.area());
-    f.render_widget(Clear, modal);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title("Confirm Kill")
-        .border_style(Style::default().fg(Color::White));
-    f.render_widget(block.clone(), modal);
-    let inner = block.inner(modal);
-    let rendered = lines.into_iter().map(Line::from).collect::<Vec<_>>();
-    f.render_widget(Paragraph::new(rendered), inner);
 }
