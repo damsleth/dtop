@@ -1,4 +1,4 @@
-use std::cmp::{max, min};
+use std::cmp::{Ordering, max, min};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::time::{Duration, Instant};
@@ -149,6 +149,9 @@ impl App {
     fn change_sort(&mut self, sort: SortBy) {
         if self.sort_state.by != sort {
             self.sort_state.by = sort;
+            if self.tree_mode {
+                self.rebuild_tree_rows();
+            }
             self.last_update = Instant::now() - Duration::from_millis(self.poll_interval_ms);
         }
     }
@@ -480,6 +483,9 @@ impl App {
             }
             KeyCode::Char('r') | KeyCode::Char('R') => {
                 self.sort_state.descending = !self.sort_state.descending;
+                if self.tree_mode {
+                    self.rebuild_tree_rows();
+                }
                 self.last_update = Instant::now() - Duration::from_millis(self.poll_interval_ms);
             }
             KeyCode::Char('k') | KeyCode::Char('K') => {
@@ -631,17 +637,7 @@ impl App {
         }
 
         for child_list in children.values_mut() {
-            child_list.sort_by(|a, b| {
-                let a_name = by_pid
-                    .get(a)
-                    .map(|p| p.name.to_lowercase())
-                    .unwrap_or_default();
-                let b_name = by_pid
-                    .get(b)
-                    .map(|p| p.name.to_lowercase())
-                    .unwrap_or_default();
-                a_name.cmp(&b_name).then_with(|| a.cmp(b))
-            });
+            child_list.sort_by(|a, b| self.compare_snapshot_pids(*a, *b, &by_pid));
         }
 
         let mut roots = children.get(&1).cloned().unwrap_or_default();
@@ -655,17 +651,7 @@ impl App {
         }
         roots.sort();
         roots.dedup();
-        roots.sort_by(|a, b| {
-            let a_name = by_pid
-                .get(a)
-                .map(|p| p.name.to_lowercase())
-                .unwrap_or_default();
-            let b_name = by_pid
-                .get(b)
-                .map(|p| p.name.to_lowercase())
-                .unwrap_or_default();
-            a_name.cmp(&b_name).then_with(|| a.cmp(b))
-        });
+        roots.sort_by(|a, b| self.compare_snapshot_pids(*a, *b, &by_pid));
 
         let selected_pid = self
             .selected_index
@@ -685,6 +671,44 @@ impl App {
         } else {
             self.selected_index = Some(0);
         }
+    }
+
+    fn compare_snapshot_pids(
+        &self,
+        a_pid: i32,
+        b_pid: i32,
+        by_pid: &HashMap<i32, &ProcSnapshotEntry>,
+    ) -> Ordering {
+        let a = by_pid.get(&a_pid);
+        let b = by_pid.get(&b_pid);
+        let cmp = match (a, b) {
+            (Some(a), Some(b)) => {
+                let name_cmp = a
+                    .name
+                    .to_lowercase()
+                    .cmp(&b.name.to_lowercase())
+                    .then_with(|| a.pid.cmp(&b.pid));
+                match self.sort_state.by {
+                    SortBy::Cpu => a
+                        .cpu
+                        .total_cmp(&b.cpu)
+                        .then_with(|| a.mem_mb.total_cmp(&b.mem_mb))
+                        .then(name_cmp),
+                    SortBy::Mem => a
+                        .mem_mb
+                        .total_cmp(&b.mem_mb)
+                        .then_with(|| a.cpu.total_cmp(&b.cpu))
+                        .then(name_cmp),
+                    SortBy::Name => name_cmp,
+                }
+            }
+            (Some(_), None) => Ordering::Greater,
+            (None, Some(_)) => Ordering::Less,
+            (None, None) => Ordering::Equal,
+        };
+
+        let cmp = if self.sort_state.descending { cmp.reverse() } else { cmp };
+        cmp.then_with(|| a_pid.cmp(&b_pid))
     }
 
     fn append_tree_row(
@@ -1199,7 +1223,7 @@ fn draw_ui(f: &mut ratatui::Frame<'_>, app: &mut App) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{App, CollectorBackend};
+    use super::{App, CollectorBackend, SortBy};
     use dtop_collector::{Collector, ProcessRecord};
     use std::io;
 
@@ -1269,5 +1293,56 @@ mod tests {
         assert_eq!(app.detail_info.len(), 2);
         assert_eq!(app.detail_info[0].pid, 101);
         assert_eq!(app.detail_info[1].pid, 102);
+    }
+
+    #[test]
+    fn tree_view_sorts_roots_and_siblings_by_active_sort() {
+        let collector = Box::new(MockCollector {
+            rows: vec![
+                ProcessRecord {
+                    pid: 10,
+                    ppid: 1,
+                    name: "alpha".to_string(),
+                    cpu: 10.0,
+                    mem_mb: 10.0,
+                },
+                ProcessRecord {
+                    pid: 20,
+                    ppid: 1,
+                    name: "bravo".to_string(),
+                    cpu: 30.0,
+                    mem_mb: 20.0,
+                },
+                ProcessRecord {
+                    pid: 11,
+                    ppid: 10,
+                    name: "alpha-child-1".to_string(),
+                    cpu: 2.0,
+                    mem_mb: 1.0,
+                },
+                ProcessRecord {
+                    pid: 12,
+                    ppid: 10,
+                    name: "alpha-child-2".to_string(),
+                    cpu: 5.0,
+                    mem_mb: 1.0,
+                },
+            ],
+        });
+        let mut app = App::new(CollectorBackend::MacPs, collector);
+        app.get_processes();
+        app.tree_mode = true;
+        app.expanded_pids.insert(10);
+
+        app.sort_state.by = SortBy::Cpu;
+        app.sort_state.descending = true;
+        app.rebuild_tree_rows();
+        let descending: Vec<i32> = app.tree_rows.iter().map(|r| r.pid).collect();
+        assert_eq!(descending, vec![20, 10, 12, 11]);
+
+        app.sort_state.descending = false;
+        app.rebuild_tree_rows();
+        let ascending: Vec<i32> = app.tree_rows.iter().map(|r| r.pid).collect();
+        assert_eq!(ascending, vec![10, 11, 12, 20]);
     }
 }
