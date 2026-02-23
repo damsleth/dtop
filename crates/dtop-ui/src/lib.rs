@@ -3,6 +3,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use std::collections::VecDeque;
 
 pub struct HelpModalData {
     pub poll_interval_ms: u64,
@@ -43,6 +44,52 @@ pub fn truncate_to_width(input: &str, max_width: usize) -> String {
     input.chars().take(max_width).collect()
 }
 
+pub fn sparkline(values: &VecDeque<f64>, width: usize) -> String {
+    const LEVELS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+    if width == 0 {
+        return String::new();
+    }
+    if values.is_empty() {
+        return " ".repeat(width);
+    }
+
+    let sampled = sample_tail(values, width);
+    let mut min_v = f64::INFINITY;
+    let mut max_v = f64::NEG_INFINITY;
+    for value in &sampled {
+        min_v = min_v.min(*value);
+        max_v = max_v.max(*value);
+    }
+
+    if (max_v - min_v).abs() < f64::EPSILON {
+        if max_v <= 0.0 {
+            return " ".repeat(width);
+        }
+        return std::iter::repeat_n(LEVELS[0], width).collect();
+    }
+
+    sampled
+        .iter()
+        .map(|value| {
+            let normalized = ((value - min_v) / (max_v - min_v)).clamp(0.0, 1.0);
+            let idx = (normalized * ((LEVELS.len() - 1) as f64)).round() as usize;
+            LEVELS[idx]
+        })
+        .collect()
+}
+
+fn sample_tail(values: &VecDeque<f64>, width: usize) -> Vec<f64> {
+    if values.len() <= width {
+        let mut out = vec![0.0; width - values.len()];
+        out.extend(values.iter().copied());
+        return out;
+    }
+
+    let start = values.len() - width;
+    values.iter().skip(start).copied().collect()
+}
+
 pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     let popup_layout = Layout::default()
         .direction(Direction::Vertical)
@@ -77,6 +124,7 @@ pub fn render_help_modal(f: &mut ratatui::Frame<'_>, data: &HelpModalData) {
         ("↑/↓", "Select process row"),
         ("e", "Toggle tree view"),
         ("x", "Toggle average mode"),
+        ("g", "Toggle sparkline columns"),
         (",/.", "Adjust average sample size"),
         ("←/→", "Switch sort column"),
         ("enter", "Toggle extended info / tree node"),
@@ -181,4 +229,24 @@ pub fn render_kill_modal(f: &mut ratatui::Frame<'_>, data: &KillModalData<'_>) {
     let inner = block.inner(modal);
     let rendered = lines.into_iter().map(Line::from).collect::<Vec<_>>();
     f.render_widget(Paragraph::new(rendered), inner);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sparkline;
+    use std::collections::VecDeque;
+
+    #[test]
+    fn sparkline_uses_requested_width() {
+        let values = VecDeque::from([0.0, 1.0, 2.0]);
+        let out = sparkline(&values, 6);
+        assert_eq!(out.chars().count(), 6);
+    }
+
+    #[test]
+    fn sparkline_handles_flat_series() {
+        let values = VecDeque::from([3.0, 3.0, 3.0, 3.0]);
+        let out = sparkline(&values, 4);
+        assert_eq!(out, "▁▁▁▁");
+    }
 }

@@ -22,7 +22,7 @@ use dtop_core::{
 };
 use dtop_ui::{
     HelpModalData, KillModalData, is_ctrl_c_quit, is_search_input_char, render_help_modal,
-    render_kill_modal, sort_header_style, truncate_to_width,
+    render_kill_modal, sort_header_style, sparkline, truncate_to_width,
 };
 
 #[derive(Clone, Debug)]
@@ -36,6 +36,7 @@ struct App {
     poll_interval_ms: u64,
     sort_state: SortState,
     lazy_mode: bool,
+    show_graphs: bool,
     lazy_window: usize,
     debug_kill: bool,
     last_update: Instant,
@@ -69,6 +70,7 @@ impl App {
             poll_interval_ms: 1000,
             sort_state: SortState::default(),
             lazy_mode: true,
+            show_graphs: false,
             lazy_window: 10,
             debug_kill: false,
             last_update: now - Duration::from_millis(1000),
@@ -420,6 +422,9 @@ impl App {
             }
             KeyCode::Char('x') | KeyCode::Char('X') => {
                 self.lazy_mode = !self.lazy_mode;
+            }
+            KeyCode::Char('g') | KeyCode::Char('G') => {
+                self.show_graphs = !self.show_graphs;
             }
             KeyCode::Char('e') | KeyCode::Char('E') => {
                 self.tree_mode = !self.tree_mode;
@@ -815,9 +820,14 @@ fn draw_ui(f: &mut ratatui::Frame<'_>, app: &mut App) -> usize {
     }
 
     let value_width: u16 = if app.lazy_mode { 12 } else { 10 };
+    let graph_width: u16 = 8;
+    let graph_columns_visible = !app.tree_mode
+        && app.show_graphs
+        && area.width > (value_width * 2 + graph_width * 2 + 6);
     let min_name = 1u16;
-    let name_col_width = if area.width > (value_width * 2 + 2) {
-        area.width - (value_width * 2 + 2)
+    let fixed_width = value_width * 2 + 2 + if graph_columns_visible { graph_width * 2 + 2 } else { 0 };
+    let name_col_width = if area.width > fixed_width {
+        area.width - fixed_width
     } else {
         min_name
     };
@@ -896,7 +906,7 @@ fn draw_ui(f: &mut ratatui::Frame<'_>, app: &mut App) -> usize {
         }
     }
 
-    let header_cells = vec![
+    let mut header_cells = vec![
         Cell::from(Span::styled(
             truncate_to_width(&name_header, name_col_width as usize),
             sort_header_style(app.sort_state.by == SortBy::Name),
@@ -910,6 +920,16 @@ fn draw_ui(f: &mut ratatui::Frame<'_>, app: &mut App) -> usize {
             sort_header_style(app.sort_state.by == SortBy::Mem),
         )),
     ];
+    if graph_columns_visible {
+        header_cells.push(Cell::from(Span::styled(
+            "CPU ▄",
+            sort_header_style(false),
+        )));
+        header_cells.push(Cell::from(Span::styled(
+            "MEM ▄",
+            sort_header_style(false),
+        )));
+    }
     let header = Row::new(header_cells).height(1);
 
     let mut rows = Vec::with_capacity(visible_rows);
@@ -985,14 +1005,22 @@ fn draw_ui(f: &mut ratatui::Frame<'_>, app: &mut App) -> usize {
                     style = style.add_modifier(Modifier::REVERSED);
                 }
 
-                rows.push(
-                    Row::new(vec![
-                        Cell::from(truncate_to_width(&display_name, name_col_width as usize)),
-                        Cell::from(format!("{:>width$.2}", cpu, width = value_width as usize)),
-                        Cell::from(format!("{:>width$.2}", mem, width = value_width as usize)),
-                    ])
-                    .style(style),
-                );
+                let mut cells = vec![
+                    Cell::from(truncate_to_width(&display_name, name_col_width as usize)),
+                    Cell::from(format!("{:>width$.2}", cpu, width = value_width as usize)),
+                    Cell::from(format!("{:>width$.2}", mem, width = value_width as usize)),
+                ];
+                if graph_columns_visible {
+                    if let Some(history) = app.metric_history.get(&proc.name) {
+                        cells.push(Cell::from(sparkline(&history.cpu, graph_width as usize)));
+                        cells.push(Cell::from(sparkline(&history.mem, graph_width as usize)));
+                    } else {
+                        cells.push(Cell::from(" ".repeat(graph_width as usize)));
+                        cells.push(Cell::from(" ".repeat(graph_width as usize)));
+                    }
+                }
+
+                rows.push(Row::new(cells).style(style));
             }
         }
     }
@@ -1008,14 +1036,17 @@ fn draw_ui(f: &mut ratatui::Frame<'_>, app: &mut App) -> usize {
         ),
     };
 
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(name_col_width),
-            Constraint::Length(value_width),
-            Constraint::Length(value_width),
-        ],
-    )
+    let mut constraints = vec![
+        Constraint::Length(name_col_width),
+        Constraint::Length(value_width),
+        Constraint::Length(value_width),
+    ];
+    if graph_columns_visible {
+        constraints.push(Constraint::Length(graph_width));
+        constraints.push(Constraint::Length(graph_width));
+    }
+
+    let table = Table::new(rows, constraints)
     .header(header)
     .column_spacing(1);
     f.render_widget(table, table_area);
