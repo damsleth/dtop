@@ -1,0 +1,13 @@
+# Ignore Mac system files
+.DS_Store
+# rust build artifacts
+/target/
+# Ignore Cargo.lock for libraries, but not for binaries
+# (see https://doc.rust-lang.org/cargo/guide/cargo-toml-vs-cargo-lock.html)
+Cargo.lock
+# Ignore generated files from build scripts
+/build.rs
+# Ignore generated files from procedural macros
+/target/
+# ignore TODO for now
+TODO.md
