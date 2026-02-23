@@ -1,0 +1,9 @@
+[package]
+name = "dtop"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ratatui.workspace = true
+crossterm.workspace = true
+libc.workspace = true
