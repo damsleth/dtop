@@ -32,11 +32,47 @@ struct KillPrompt {
     debug_summary: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GraphMode {
+    Off,
+    List,
+    Detail,
+    Both,
+}
+
+impl GraphMode {
+    fn cycle(self) -> Self {
+        match self {
+            GraphMode::Off => GraphMode::List,
+            GraphMode::List => GraphMode::Detail,
+            GraphMode::Detail => GraphMode::Both,
+            GraphMode::Both => GraphMode::Off,
+        }
+    }
+
+    fn show_list(self) -> bool {
+        matches!(self, GraphMode::List | GraphMode::Both)
+    }
+
+    fn show_detail(self) -> bool {
+        matches!(self, GraphMode::Detail | GraphMode::Both)
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            GraphMode::Off => "Off",
+            GraphMode::List => "List",
+            GraphMode::Detail => "Detail",
+            GraphMode::Both => "Both",
+        }
+    }
+}
+
 struct App {
     poll_interval_ms: u64,
     sort_state: SortState,
     lazy_mode: bool,
-    show_graphs: bool,
+    graph_mode: GraphMode,
     lazy_window: usize,
     debug_kill: bool,
     last_update: Instant,
@@ -70,7 +106,7 @@ impl App {
             poll_interval_ms: 1000,
             sort_state: SortState::default(),
             lazy_mode: true,
-            show_graphs: false,
+            graph_mode: GraphMode::Off,
             lazy_window: 10,
             debug_kill: false,
             last_update: now - Duration::from_millis(1000),
@@ -424,7 +460,7 @@ impl App {
                 self.lazy_mode = !self.lazy_mode;
             }
             KeyCode::Char('g') | KeyCode::Char('G') => {
-                self.show_graphs = !self.show_graphs;
+                self.graph_mode = self.graph_mode.cycle();
             }
             KeyCode::Char('e') | KeyCode::Char('E') => {
                 self.tree_mode = !self.tree_mode;
@@ -821,8 +857,10 @@ fn draw_ui(f: &mut ratatui::Frame<'_>, app: &mut App) -> usize {
 
     let value_width: u16 = if app.lazy_mode { 12 } else { 10 };
     let graph_width: u16 = 8;
+    let list_graphs_enabled = app.graph_mode.show_list();
+    let detail_graphs_enabled = app.graph_mode.show_detail();
     let graph_columns_visible = !app.tree_mode
-        && app.show_graphs
+        && list_graphs_enabled
         && area.width > (value_width * 2 + graph_width * 2 + 6);
     let min_name = 1u16;
     let fixed_width = value_width * 2 + 2 + if graph_columns_visible { graph_width * 2 + 2 } else { 0 };
@@ -840,6 +878,9 @@ fn draw_ui(f: &mut ratatui::Frame<'_>, app: &mut App) -> usize {
     let mut detail_height = 0u16;
     if detail_active {
         let mut required = 1u16;
+        if detail_graphs_enabled {
+            required = required.saturating_add(2);
+        }
         if detail_rows > 0 {
             required = required.saturating_add(1 + detail_rows as u16);
         } else {
@@ -1082,6 +1123,27 @@ fn draw_ui(f: &mut ratatui::Frame<'_>, app: &mut App) -> usize {
                 .add_modifier(Modifier::BOLD),
         )]));
 
+        if detail_graphs_enabled {
+            let detail_graph_width = detail_area.width.saturating_sub(14) as usize;
+            let (cpu_graph, mem_graph) = app
+                .metric_history
+                .get(&selected_name)
+                .map(|history| {
+                    (
+                        sparkline(&history.cpu, detail_graph_width),
+                        sparkline(&history.mem, detail_graph_width),
+                    )
+                })
+                .unwrap_or_else(|| {
+                    (
+                        " ".repeat(detail_graph_width),
+                        " ".repeat(detail_graph_width),
+                    )
+                });
+            detail_lines.push(Line::from(format!("CPU trend: {cpu_graph}")));
+            detail_lines.push(Line::from(format!("MEM trend: {mem_graph}")));
+        }
+
         if detail_area.height > 1 {
             detail_lines.push(Line::from(Span::styled(
                 "PID       CPU%      MEM(MB)",
@@ -1118,6 +1180,7 @@ fn draw_ui(f: &mut ratatui::Frame<'_>, app: &mut App) -> usize {
             sort_label,
             lazy_window: app.lazy_window,
             kill_debug_enabled: app.debug_kill,
+            graph_mode: app.graph_mode.label().to_string(),
         };
         render_help_modal(f, &help_data);
     }

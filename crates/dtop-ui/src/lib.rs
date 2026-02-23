@@ -12,6 +12,7 @@ pub struct HelpModalData {
     pub lazy_window: usize,
     pub kill_debug_enabled: bool,
     pub backend_label: String,
+    pub graph_mode: String,
 }
 
 pub struct KillModalData<'a> {
@@ -124,7 +125,7 @@ pub fn render_help_modal(f: &mut ratatui::Frame<'_>, data: &HelpModalData) {
         ("↑/↓", "Select process row"),
         ("e", "Toggle tree view"),
         ("x", "Toggle average mode"),
-        ("g", "Toggle sparkline columns"),
+        ("g", "Cycle graph mode (Off/List/Detail/Both)"),
         (",/.", "Adjust average sample size"),
         ("←/→", "Switch sort column"),
         ("enter", "Toggle extended info / tree node"),
@@ -143,6 +144,7 @@ pub fn render_help_modal(f: &mut ratatui::Frame<'_>, data: &HelpModalData) {
         format!("Poll interval: {}ms", data.poll_interval_ms),
         format!("Mode: {}", data.mode_label),
         format!("Collector: {}", data.backend_label),
+        format!("Graphs: {}", data.graph_mode),
         format!("Sort: {}", data.sort_label),
         format!("# Average Samples: {}", data.lazy_window),
         format!(
