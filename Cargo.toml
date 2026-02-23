@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/dtop"]
+members = ["crates/dtop", "crates/dtop-core"]
 default-members = ["crates/dtop"]
 resolver = "2"
 

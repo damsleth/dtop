@@ -16,68 +16,12 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table};
+use dtop_core::{
+    DetailEntry, FilterState, MetricHistory, ProcEntry, ProcSnapshotEntry, SortBy, SortState,
+    TreeRow, median, parse_ps_line, shrink_deque,
+};
 
 const PS_AXO_FIELDS: &str = "pid=,ppid=,%cpu=,rss=,comm=";
-
-#[derive(Clone, Debug)]
-struct ProcEntry {
-    name: String,
-    cpu: f64,
-    mem_mb: f64,
-    count: usize,
-    cpu_lazy: f64,
-    mem_lazy: f64,
-}
-
-#[derive(Clone, Debug)]
-struct DetailEntry {
-    pid: i32,
-    cpu: f64,
-    mem_mb: f64,
-}
-
-#[derive(Clone, Debug)]
-struct ProcSnapshotEntry {
-    pid: i32,
-    ppid: i32,
-    name: String,
-    cpu: f64,
-    mem_mb: f64,
-}
-
-#[derive(Clone, Debug)]
-struct TreeRow {
-    pid: i32,
-    name: String,
-    cpu: f64,
-    mem_mb: f64,
-    depth: usize,
-    has_children: bool,
-    expanded: bool,
-}
-
-#[derive(Clone, Debug)]
-struct MetricHistory {
-    cpu: VecDeque<f64>,
-    mem: VecDeque<f64>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SortBy {
-    Cpu,
-    Mem,
-    Name,
-}
-
-impl SortBy {
-    fn label(self) -> &'static str {
-        match self {
-            SortBy::Cpu => "CPU",
-            SortBy::Mem => "MEM",
-            SortBy::Name => "NAME",
-        }
-    }
-}
 
 #[derive(Clone, Debug)]
 struct KillPrompt {
@@ -88,8 +32,7 @@ struct KillPrompt {
 
 struct App {
     poll_interval_ms: u64,
-    sort_by: SortBy,
-    sort_descending: bool,
+    sort_state: SortState,
     lazy_mode: bool,
     lazy_window: usize,
     debug_kill: bool,
@@ -99,8 +42,7 @@ struct App {
     filtered_indices: Vec<usize>,
     selected_index: Option<usize>,
     show_extended: bool,
-    search_mode: bool,
-    search_query: String,
+    filter_state: FilterState,
     detail_info: Vec<DetailEntry>,
     detail_command: Option<String>,
     detail_last_update: Instant,
@@ -121,8 +63,7 @@ impl App {
         let now = Instant::now();
         Self {
             poll_interval_ms: 1000,
-            sort_by: SortBy::Cpu,
-            sort_descending: true,
+            sort_state: SortState::default(),
             lazy_mode: true,
             lazy_window: 10,
             debug_kill: false,
@@ -132,8 +73,7 @@ impl App {
             filtered_indices: Vec::new(),
             selected_index: None,
             show_extended: false,
-            search_mode: false,
-            search_query: String::new(),
+            filter_state: FilterState::default(),
             detail_info: Vec::new(),
             detail_command: None,
             detail_last_update: now - Duration::from_millis(1000),
@@ -163,8 +103,8 @@ impl App {
     }
 
     fn change_sort(&mut self, sort: SortBy) {
-        if self.sort_by != sort {
-            self.sort_by = sort;
+        if self.sort_state.by != sort {
+            self.sort_state.by = sort;
             self.last_update = Instant::now() - Duration::from_millis(self.poll_interval_ms);
         }
     }
@@ -266,7 +206,7 @@ impl App {
         self.metric_history
             .retain(|name, _| present.contains_key(name));
 
-        match self.sort_by {
+        match self.sort_state.by {
             SortBy::Cpu => {
                 if self.lazy_mode {
                     proc_list.sort_by(|a, b| a.cpu_lazy.total_cmp(&b.cpu_lazy));
@@ -285,7 +225,7 @@ impl App {
                 proc_list.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
             }
         }
-        if self.sort_descending {
+        if self.sort_state.descending {
             proc_list.reverse();
         }
         proc_list
@@ -304,7 +244,7 @@ impl App {
             return;
         }
 
-        let query = self.search_query.to_lowercase();
+        let query = self.filter_state.search_query.to_lowercase();
         self.filtered_indices.clear();
         for (idx, proc) in self.current_processes.iter().enumerate() {
             if query.is_empty() || proc.name.to_lowercase().contains(&query) {
@@ -386,8 +326,8 @@ impl App {
     }
 
     fn clear_search_and_selection(&mut self) {
-        self.search_mode = false;
-        self.search_query.clear();
+        self.filter_state.search_mode = false;
+        self.filter_state.search_query.clear();
         self.selected_index = None;
         self.show_extended = false;
         self.previous_scroll_anchor = None;
@@ -490,7 +430,7 @@ impl App {
             return self.handle_kill_prompt_input(key);
         }
 
-        if self.search_mode {
+        if self.filter_state.search_mode {
             return self.handle_search_input(key);
         }
 
@@ -516,8 +456,8 @@ impl App {
                 self.selected_name = None;
                 self.previous_scroll_anchor = None;
                 if self.tree_mode {
-                    self.search_mode = false;
-                    self.search_query.clear();
+                    self.filter_state.search_mode = false;
+                    self.filter_state.search_query.clear();
                     self.rebuild_tree_rows();
                     self.selected_index = if self.tree_rows.is_empty() { None } else { Some(0) };
                 } else {
@@ -525,7 +465,7 @@ impl App {
                 }
             }
             KeyCode::Char('r') | KeyCode::Char('R') => {
-                self.sort_descending = !self.sort_descending;
+                self.sort_state.descending = !self.sort_state.descending;
                 self.last_update = Instant::now() - Duration::from_millis(self.poll_interval_ms);
             }
             KeyCode::Char('k') | KeyCode::Char('K') => {
@@ -566,7 +506,7 @@ impl App {
                 if self.tree_mode {
                     self.set_tree_selected_expanded(false);
                 } else {
-                    let next = match self.sort_by {
+                    let next = match self.sort_state.by {
                         SortBy::Cpu => SortBy::Name,
                         SortBy::Mem => SortBy::Cpu,
                         SortBy::Name => SortBy::Mem,
@@ -578,7 +518,7 @@ impl App {
                 if self.tree_mode {
                     self.set_tree_selected_expanded(true);
                 } else {
-                    let next = match self.sort_by {
+                    let next = match self.sort_state.by {
                         SortBy::Cpu => SortBy::Mem,
                         SortBy::Mem => SortBy::Name,
                         SortBy::Name => SortBy::Cpu,
@@ -594,7 +534,7 @@ impl App {
             KeyCode::Up => self.move_selection(-1, visible_rows, false),
             KeyCode::Enter => self.toggle_extended_selected(),
             KeyCode::Char('f') | KeyCode::Char('F') => {
-                self.search_mode = true;
+                self.filter_state.search_mode = true;
             }
             _ => {}
         }
@@ -605,10 +545,10 @@ impl App {
         match key {
             KeyCode::Esc => self.clear_search_and_selection(),
             KeyCode::Enter => {
-                self.search_mode = false;
+                self.filter_state.search_mode = false;
             }
             KeyCode::Backspace => {
-                self.search_query.pop();
+                self.filter_state.search_query.pop();
                 self.selected_index = None;
                 self.show_extended = false;
                 self.previous_scroll_anchor = None;
@@ -618,7 +558,7 @@ impl App {
             }
             KeyCode::Char(c) => {
                 if c.is_ascii_graphic() || c == ' ' {
-                    self.search_query.push(c);
+                    self.filter_state.search_query.push(c);
                     self.selected_index = None;
                     self.show_extended = false;
                     self.previous_scroll_anchor = None;
@@ -809,39 +749,6 @@ impl App {
     }
 }
 
-fn shrink_deque(deque: &mut VecDeque<f64>, max_len: usize) {
-    while deque.len() > max_len {
-        deque.pop_front();
-    }
-}
-
-fn median(values: &VecDeque<f64>) -> Option<f64> {
-    if values.is_empty() {
-        return None;
-    }
-    let mut sorted: Vec<f64> = values.iter().copied().collect();
-    sorted.sort_by(|a, b| a.total_cmp(b));
-    let mid = sorted.len() / 2;
-    if sorted.len() % 2 == 0 {
-        Some((sorted[mid - 1] + sorted[mid]) / 2.0)
-    } else {
-        Some(sorted[mid])
-    }
-}
-
-fn parse_ps_line(line: &str) -> Option<(i32, i32, f64, f64, String)> {
-    let mut parts = line.split_whitespace();
-    let pid = parts.next()?.parse::<i32>().ok()?;
-    let ppid = parts.next()?.parse::<i32>().ok()?;
-    let cpu = parts.next()?.parse::<f64>().ok()?;
-    let mem = parts.next()?.parse::<f64>().ok()?;
-    let command = parts.collect::<Vec<_>>().join(" ");
-    if command.is_empty() {
-        return None;
-    }
-    Some((pid, ppid, cpu, mem, command))
-}
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -885,11 +792,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn draw_ui(f: &mut ratatui::Frame<'_>, app: &mut App) -> usize {
     let area = f.area();
     let mut lines_before_header = 0;
-    let search_visible = !app.tree_mode && (app.search_mode || !app.search_query.is_empty());
+    let search_visible = !app.tree_mode && (app.filter_state.search_mode || !app.filter_state.search_query.is_empty());
 
     if search_visible {
-        let mut query = app.search_query.clone();
-        if app.search_mode {
+        let mut query = app.filter_state.search_query.clone();
+        if app.filter_state.search_mode {
             query.push('_');
         }
         let line = Line::from(vec![
@@ -967,7 +874,7 @@ fn draw_ui(f: &mut ratatui::Frame<'_>, app: &mut App) -> usize {
         app.previous_scroll_anchor = Some(0);
     }
 
-    let direction_icon = if app.sort_descending { "↓" } else { "↑" };
+    let direction_icon = if app.sort_state.descending { "↓" } else { "↑" };
     let (mut name_header, mut cpu_header, mut mem_header) = if app.tree_mode {
         (
             "PROCESS TREE".to_string(),
@@ -982,7 +889,7 @@ fn draw_ui(f: &mut ratatui::Frame<'_>, app: &mut App) -> usize {
         )
     };
     if !app.tree_mode {
-        match app.sort_by {
+        match app.sort_state.by {
             SortBy::Name => name_header = format!("{direction_icon} {name_header}"),
             SortBy::Cpu => cpu_header = format!("{direction_icon} {cpu_header}"),
             SortBy::Mem => mem_header = format!("{direction_icon} {mem_header}"),
@@ -996,15 +903,15 @@ fn draw_ui(f: &mut ratatui::Frame<'_>, app: &mut App) -> usize {
     let header_cells = vec![
         Cell::from(Span::styled(
             truncate_to_width(&name_header, name_col_width as usize),
-            sort_header_style(app.sort_by == SortBy::Name),
+            sort_header_style(app.sort_state.by == SortBy::Name),
         )),
         Cell::from(Span::styled(
             truncate_to_width(&cpu_header, value_width as usize),
-            sort_header_style(app.sort_by == SortBy::Cpu),
+            sort_header_style(app.sort_state.by == SortBy::Cpu),
         )),
         Cell::from(Span::styled(
             truncate_to_width(&mem_header, value_width as usize),
-            sort_header_style(app.sort_by == SortBy::Mem),
+            sort_header_style(app.sort_state.by == SortBy::Mem),
         )),
     ];
     let header = Row::new(header_cells).height(1);
@@ -1245,7 +1152,7 @@ fn render_help_modal(f: &mut ratatui::Frame<'_>, app: &App) {
         ("q", "Quit"),
     ];
 
-    let mut sort_label = app.sort_by.label().to_string();
+    let mut sort_label = app.sort_state.by.label().to_string();
     if app.lazy_mode {
         sort_label.push_str(" average (x̄)");
     }
