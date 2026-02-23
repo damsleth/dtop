@@ -13,13 +13,25 @@ pub struct HelpModalData {
     pub kill_debug_enabled: bool,
     pub backend_label: String,
     pub graph_mode: String,
+    pub keybindings: Vec<(String, String)>,
 }
 
 pub struct KillModalData<'a> {
     pub command: &'a str,
     pub pids: &'a [i32],
+    pub signal_label: &'a str,
+    pub graceful_then_force: bool,
+    pub require_typed_confirmation: bool,
+    pub typed_confirmation: &'a str,
     pub debug_summary: Option<&'a str>,
     pub error: Option<&'a str>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThresholdLevel {
+    Normal,
+    Warning,
+    Critical,
 }
 
 pub fn is_ctrl_c_quit(code: KeyCode, modifiers: KeyModifiers) -> bool {
@@ -36,6 +48,37 @@ pub fn sort_header_style(active: bool) -> Style {
         style = style.add_modifier(Modifier::REVERSED);
     }
     style
+}
+
+pub fn threshold_level(value: f64, warning: f64, critical: f64) -> ThresholdLevel {
+    if value >= critical {
+        ThresholdLevel::Critical
+    } else if value >= warning {
+        ThresholdLevel::Warning
+    } else {
+        ThresholdLevel::Normal
+    }
+}
+
+pub fn threshold_color(level: ThresholdLevel) -> Color {
+    match level {
+        ThresholdLevel::Normal => Color::Green,
+        ThresholdLevel::Warning => Color::Yellow,
+        ThresholdLevel::Critical => Color::Red,
+    }
+}
+
+pub fn format_uptime_short(total_seconds: u64) -> String {
+    let days = total_seconds / 86_400;
+    let hours = (total_seconds % 86_400) / 3_600;
+    let minutes = (total_seconds % 3_600) / 60;
+    if days > 0 {
+        format!("{days}d{hours}h")
+    } else if hours > 0 {
+        format!("{hours}h{minutes}m")
+    } else {
+        format!("{minutes}m")
+    }
 }
 
 pub fn truncate_to_width(input: &str, max_width: usize) -> String {
@@ -120,28 +163,6 @@ pub fn render_help_modal(f: &mut ratatui::Frame<'_>, data: &HelpModalData) {
         " \\__,_|\\__\\___/| .__/ ",
         "    @damsleth's|_|top ",
     ];
-    let shortcuts = [
-        ("+/-", "Adjust polling interval"),
-        ("↑/↓", "Select process row"),
-        ("e", "Toggle tree view"),
-        ("x", "Toggle average mode"),
-        ("g", "Cycle graph mode (Off/List/Detail/Both)"),
-        ("1/2/3", "Toggle CPU/MEM/NET panels"),
-        (",/.", "Adjust average sample size"),
-        ("←/→", "Switch sort column"),
-        ("space", "Expand/collapse tree node"),
-        ("enter", "Toggle/pin extended info panel"),
-        ("c", "Sort by CPU"),
-        ("m", "Sort by Memory"),
-        ("p", "Sort by Name"),
-        ("r", "Reverse sort"),
-        ("f", "Filter processes"),
-        ("k", "Kill highlighted process"),
-        ("d", "Toggle kill debug info"),
-        ("esc/?", "Help or close search"),
-        ("q", "Quit"),
-    ];
-
     let status_lines = [
         format!("Poll interval: {}ms", data.poll_interval_ms),
         format!("Mode: {}", data.mode_label),
@@ -181,10 +202,10 @@ pub fn render_help_modal(f: &mut ratatui::Frame<'_>, data: &HelpModalData) {
         )));
     }
     lines.push(Line::from(""));
-    for (key, desc) in shortcuts {
+    for (key, desc) in &data.keybindings {
         lines.push(Line::from(vec![
-            Span::styled(format!("{key:<7}"), Style::default().fg(Color::White)),
-            Span::raw(desc),
+            Span::styled(format!("{key:<12}"), Style::default().fg(Color::White)),
+            Span::raw(desc.as_str()),
         ]));
     }
     f.render_widget(Paragraph::new(lines), inner);
@@ -192,8 +213,17 @@ pub fn render_help_modal(f: &mut ratatui::Frame<'_>, data: &HelpModalData) {
 
 pub fn render_kill_modal(f: &mut ratatui::Frame<'_>, data: &KillModalData<'_>) {
     let mut lines = vec![
-        "Send SIGKILL?".to_string(),
+        "Dispatch signal?".to_string(),
         format!("Process: {}", data.command),
+        format!("Signal: {}", data.signal_label),
+        format!(
+            "Graceful->force: {}",
+            if data.graceful_then_force {
+                "ON"
+            } else {
+                "OFF"
+            }
+        ),
     ];
 
     if data.pids.is_empty() {
@@ -215,7 +245,13 @@ pub fn render_kill_modal(f: &mut ratatui::Frame<'_>, data: &KillModalData<'_>) {
         lines.push(current);
     }
 
-    lines.push("Enter = confirm   Esc = cancel".to_string());
+    if data.require_typed_confirmation {
+        lines.push("Type KILL then Enter to confirm".to_string());
+        lines.push(format!("Confirm input: {}", data.typed_confirmation));
+    } else {
+        lines.push("Enter = confirm   Esc = cancel".to_string());
+    }
+    lines.push("1=SIGTERM 2=SIGINT 3=SIGKILL g=toggle graceful flow".to_string());
     if let Some(summary) = data.debug_summary {
         lines.push(summary.to_string());
     }
@@ -237,7 +273,7 @@ pub fn render_kill_modal(f: &mut ratatui::Frame<'_>, data: &KillModalData<'_>) {
 
 #[cfg(test)]
 mod tests {
-    use super::sparkline;
+    use super::{ThresholdLevel, format_uptime_short, sparkline, threshold_level};
     use std::collections::VecDeque;
 
     #[test]
@@ -252,5 +288,19 @@ mod tests {
         let values = VecDeque::from([3.0, 3.0, 3.0, 3.0]);
         let out = sparkline(&values, 4);
         assert_eq!(out, "▁▁▁▁");
+    }
+
+    #[test]
+    fn threshold_levels_map_to_expected_states() {
+        assert_eq!(threshold_level(40.0, 70.0, 90.0), ThresholdLevel::Normal);
+        assert_eq!(threshold_level(75.0, 70.0, 90.0), ThresholdLevel::Warning);
+        assert_eq!(threshold_level(95.0, 70.0, 90.0), ThresholdLevel::Critical);
+    }
+
+    #[test]
+    fn formats_uptime_compactly() {
+        assert_eq!(format_uptime_short(59), "0m");
+        assert_eq!(format_uptime_short(3_780), "1h3m");
+        assert_eq!(format_uptime_short(90_120), "1d1h");
     }
 }

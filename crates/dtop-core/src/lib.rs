@@ -5,6 +5,11 @@ pub struct ProcEntry {
     pub name: String,
     pub cpu: f64,
     pub mem_mb: f64,
+    pub disk_read_bps: f64,
+    pub disk_write_bps: f64,
+    pub cpu_delta: f64,
+    pub mem_delta_mb: f64,
+    pub is_new: bool,
     pub count: usize,
     pub cpu_lazy: f64,
     pub mem_lazy: f64,
@@ -24,6 +29,8 @@ pub struct ProcSnapshotEntry {
     pub name: String,
     pub cpu: f64,
     pub mem_mb: f64,
+    pub disk_read_bytes_total: Option<u64>,
+    pub disk_write_bytes_total: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -48,6 +55,10 @@ pub enum SortBy {
     Cpu,
     Mem,
     Name,
+    DiskRead,
+    DiskWrite,
+    CpuDelta,
+    MemDelta,
 }
 
 impl SortBy {
@@ -56,6 +67,10 @@ impl SortBy {
             SortBy::Cpu => "CPU",
             SortBy::Mem => "MEM",
             SortBy::Name => "NAME",
+            SortBy::DiskRead => "DISK READ",
+            SortBy::DiskWrite => "DISK WRITE",
+            SortBy::CpuDelta => "CPU DELTA",
+            SortBy::MemDelta => "MEM DELTA",
         }
     }
 }
