@@ -1102,3 +1102,78 @@ fn draw_ui(f: &mut ratatui::Frame<'_>, app: &mut App) -> usize {
 
     visible_rows
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{App, CollectorBackend};
+    use dtop_collector::{Collector, ProcessRecord};
+    use std::io;
+
+    struct MockCollector {
+        rows: Vec<ProcessRecord>,
+    }
+
+    impl Collector for MockCollector {
+        fn collect_processes(&self) -> io::Result<Vec<ProcessRecord>> {
+            Ok(self.rows.clone())
+        }
+    }
+
+    fn fixture_rows() -> Vec<ProcessRecord> {
+        include_str!("../tests/fixtures/mock_collector_snapshot.csv")
+            .lines()
+            .filter_map(|line| {
+                let mut parts = line.split(',');
+                let pid = parts.next()?.parse::<i32>().ok()?;
+                let ppid = parts.next()?.parse::<i32>().ok()?;
+                let cpu = parts.next()?.parse::<f64>().ok()?;
+                let mem_mb = parts.next()?.parse::<f64>().ok()?;
+                let name = parts.next()?.to_string();
+                Some(ProcessRecord {
+                    pid,
+                    ppid,
+                    name,
+                    cpu,
+                    mem_mb,
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn groups_collector_fixture_rows_by_command() {
+        let collector = Box::new(MockCollector {
+            rows: fixture_rows(),
+        });
+        let mut app = App::new(CollectorBackend::MacPs, collector);
+        app.lazy_mode = false;
+
+        let rows = app.get_processes();
+        assert_eq!(rows.len(), 2);
+
+        let node = rows
+            .iter()
+            .find(|row| row.name == "node")
+            .expect("node command should exist");
+        assert_eq!(node.count, 2);
+        assert_eq!(node.cpu, 17.0);
+        assert_eq!(node.mem_mb, 150.0);
+
+        assert_eq!(app.process_snapshot.len(), 3);
+        assert_eq!(app.pids_by_command.get("node"), Some(&vec![101, 102]));
+        assert_eq!(app.pids_by_command.get("bash"), Some(&vec![201]));
+    }
+
+    #[test]
+    fn builds_detail_rows_from_collector_fixture() {
+        let collector = Box::new(MockCollector {
+            rows: fixture_rows(),
+        });
+        let mut app = App::new(CollectorBackend::MacPs, collector);
+
+        app.update_process_details("node");
+        assert_eq!(app.detail_info.len(), 2);
+        assert_eq!(app.detail_info[0].pid, 101);
+        assert_eq!(app.detail_info[1].pid, 102);
+    }
+}
