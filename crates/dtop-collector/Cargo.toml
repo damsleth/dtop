@@ -3,5 +3,10 @@ name = "dtop-collector"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = ["macos-ps"]
+macos-ps = []
+linux-procfs = []
+
 [dependencies]
 dtop-core = { path = "../dtop-core" }

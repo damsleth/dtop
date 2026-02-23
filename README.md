@@ -21,6 +21,18 @@ cargo build
 cargo run
 ```
 
+Collector backend override:
+
+```bash
+cargo run -- --collector mac-ps
+```
+
+Linux procfs collector (feature-gated):
+
+```bash
+cargo run -p dtop --features dtop-collector/linux-procfs -- --collector linux-procfs
+```
+
 ## Controls
 
 - `q`: quit
@@ -39,5 +51,6 @@ cargo run
 
 ## Notes
 
-- macOS-only behavior is expected because it relies on `ps -caxo ...` output format.
+- Default collector uses `ps -caxo ...` output and works on macOS.
+- `linux-procfs` backend is available when built with `dtop-collector/linux-procfs`.
 - Sending `SIGKILL` may require sufficient permissions for target PIDs - run with `sudo` for max comfort.

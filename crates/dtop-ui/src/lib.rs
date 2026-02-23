@@ -10,6 +10,7 @@ pub struct HelpModalData {
     pub sort_label: String,
     pub lazy_window: usize,
     pub kill_debug_enabled: bool,
+    pub backend_label: String,
 }
 
 pub struct KillModalData<'a> {
@@ -93,6 +94,7 @@ pub fn render_help_modal(f: &mut ratatui::Frame<'_>, data: &HelpModalData) {
     let status_lines = [
         format!("Poll interval: {}ms", data.poll_interval_ms),
         format!("Mode: {}", data.mode_label),
+        format!("Collector: {}", data.backend_label),
         format!("Sort: {}", data.sort_label),
         format!("# Average Samples: {}", data.lazy_window),
         format!(

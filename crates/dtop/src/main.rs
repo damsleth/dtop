@@ -8,7 +8,7 @@ use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use dtop_collector::{Collector, MacPsCollector};
+use dtop_collector::{Collector, CollectorBackend, build_collector};
 use libc::{SIGKILL, kill};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -56,13 +56,14 @@ struct App {
     selected_name: Option<String>,
     metric_history: HashMap<String, MetricHistory>,
     pids_by_command: HashMap<String, Vec<i32>>,
+    collector_backend: CollectorBackend,
     collector: Box<dyn Collector>,
     kill_prompt: Option<KillPrompt>,
     kill_prompt_error: Option<String>,
 }
 
 impl App {
-    fn new() -> Self {
+    fn new(collector_backend: CollectorBackend, collector: Box<dyn Collector>) -> Self {
         let now = Instant::now();
         Self {
             poll_interval_ms: 1000,
@@ -88,7 +89,8 @@ impl App {
             selected_name: None,
             metric_history: HashMap::new(),
             pids_by_command: HashMap::new(),
-            collector: Box::new(MacPsCollector),
+            collector_backend,
+            collector,
             kill_prompt: None,
             kill_prompt_error: None,
         }
@@ -720,14 +722,39 @@ impl App {
     }
 }
 
+fn parse_collector_override(args: &[String]) -> Result<Option<String>, String> {
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == "--collector" {
+            let Some(value) = iter.next() else {
+                return Err("--collector expects a backend value".to_string());
+            };
+            return Ok(Some(value.to_string()));
+        }
+        if let Some(value) = arg.strip_prefix("--collector=") {
+            if value.is_empty() {
+                return Err("--collector expects a backend value".to_string());
+            }
+            return Ok(Some(value.to_string()));
+        }
+    }
+    Ok(None)
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Vec<String> = std::env::args().collect();
+    let collector_override = parse_collector_override(&args)
+        .map_err(io::Error::other)?;
+    let (collector_backend, collector) =
+        build_collector(collector_override.as_deref()).map_err(io::Error::other)?;
+
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::new();
+    let mut app = App::new(collector_backend, collector);
     let tick_rate = Duration::from_millis(10);
     let mut should_quit = false;
 
@@ -1056,6 +1083,7 @@ fn draw_ui(f: &mut ratatui::Frame<'_>, app: &mut App) -> usize {
         let help_data = HelpModalData {
             poll_interval_ms: app.poll_interval_ms,
             mode_label: if app.tree_mode { "Tree" } else { "List" }.to_string(),
+            backend_label: app.collector_backend.as_str().to_string(),
             sort_label,
             lazy_window: app.lazy_window,
             kill_debug_enabled: app.debug_kill,
