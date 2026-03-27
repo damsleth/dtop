@@ -280,6 +280,32 @@ struct CliArgs {
     snapshot_mode: bool,
 }
 
+#[derive(Clone, Debug, Default)]
+struct SystemView {
+    cpu_total_pct: Option<f64>,
+    mem_used_mb: Option<f64>,
+    mem_total_mb: Option<f64>,
+    swap_used_mb: Option<f64>,
+    swap_total_mb: Option<f64>,
+    load_avg_1: Option<f64>,
+    load_avg_5: Option<f64>,
+    load_avg_15: Option<f64>,
+    uptime_seconds: Option<u64>,
+    net_rx_bps: Option<f64>,
+    net_tx_bps: Option<f64>,
+    disk_read_bps: Option<f64>,
+    disk_write_bps: Option<f64>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct SystemHistory {
+    cpu: VecDeque<f64>,
+    mem: VecDeque<f64>,
+    net: VecDeque<f64>,
+    previous_net_totals: Option<NetTotalsSample>,
+    previous_disk_totals: Option<RateTotalsSample>,
+}
+
 struct App {
     poll_interval_ms: u64,
     poll_interval_shared: Arc<AtomicU64>,
@@ -310,24 +336,8 @@ struct App {
     previous_sample_captured_at: Option<Instant>,
     network_rows: Vec<NetworkRow>,
     previous_iface_totals: HashMap<String, (u64, u64, Instant)>,
-    system_cpu_total_pct: Option<f64>,
-    system_mem_used_mb: Option<f64>,
-    system_mem_total_mb: Option<f64>,
-    system_swap_used_mb: Option<f64>,
-    system_swap_total_mb: Option<f64>,
-    system_load_avg_1: Option<f64>,
-    system_load_avg_5: Option<f64>,
-    system_load_avg_15: Option<f64>,
-    system_uptime_seconds: Option<u64>,
-    system_net_rx_bps: Option<f64>,
-    system_net_tx_bps: Option<f64>,
-    system_disk_read_bps: Option<f64>,
-    system_disk_write_bps: Option<f64>,
-    previous_system_net_totals: Option<NetTotalsSample>,
-    previous_system_disk_totals: Option<RateTotalsSample>,
-    system_cpu_history: VecDeque<f64>,
-    system_mem_history: VecDeque<f64>,
-    system_net_history: VecDeque<f64>,
+    system: SystemView,
+    system_history: SystemHistory,
     kill_prompt: Option<KillPrompt>,
     kill_prompt_error: Option<String>,
     process_controller: Box<dyn ProcessController>,
@@ -391,24 +401,8 @@ impl App {
             previous_sample_captured_at: None,
             network_rows: Vec::new(),
             previous_iface_totals: HashMap::new(),
-            system_cpu_total_pct: None,
-            system_mem_used_mb: None,
-            system_mem_total_mb: None,
-            system_swap_used_mb: None,
-            system_swap_total_mb: None,
-            system_load_avg_1: None,
-            system_load_avg_5: None,
-            system_load_avg_15: None,
-            system_uptime_seconds: None,
-            system_net_rx_bps: None,
-            system_net_tx_bps: None,
-            system_disk_read_bps: None,
-            system_disk_write_bps: None,
-            previous_system_net_totals: None,
-            previous_system_disk_totals: None,
-            system_cpu_history: VecDeque::new(),
-            system_mem_history: VecDeque::new(),
-            system_net_history: VecDeque::new(),
+            system: SystemView::default(),
+            system_history: SystemHistory::default(),
             kill_prompt: None,
             kill_prompt_error: None,
             process_controller,
@@ -753,24 +747,24 @@ impl App {
     }
 
     fn apply_system_stats(&mut self, captured_at: Instant, stats: SystemStats) {
-        self.system_cpu_total_pct = stats.cpu_total_pct;
-        self.system_mem_used_mb = stats.mem_used_mb;
-        self.system_mem_total_mb = stats.mem_total_mb;
-        self.system_swap_used_mb = stats.swap_used_mb;
-        self.system_swap_total_mb = stats.swap_total_mb;
-        self.system_load_avg_1 = stats.load_avg_1;
-        self.system_load_avg_5 = stats.load_avg_5;
-        self.system_load_avg_15 = stats.load_avg_15;
-        self.system_uptime_seconds = stats.uptime_seconds;
+        self.system.cpu_total_pct = stats.cpu_total_pct;
+        self.system.mem_used_mb = stats.mem_used_mb;
+        self.system.mem_total_mb = stats.mem_total_mb;
+        self.system.swap_used_mb = stats.swap_used_mb;
+        self.system.swap_total_mb = stats.swap_total_mb;
+        self.system.load_avg_1 = stats.load_avg_1;
+        self.system.load_avg_5 = stats.load_avg_5;
+        self.system.load_avg_15 = stats.load_avg_15;
+        self.system.uptime_seconds = stats.uptime_seconds;
 
         if let Some(v) = stats.cpu_total_pct {
-            push_bounded_sample(&mut self.system_cpu_history, v, self.lazy_window);
+            push_bounded_sample(&mut self.system_history.cpu, v, self.lazy_window);
         }
         if let (Some(used), Some(total)) = (stats.mem_used_mb, stats.mem_total_mb)
             && total > 0.0
         {
             push_bounded_sample(
-                &mut self.system_mem_history,
+                &mut self.system_history.mem,
                 (used / total) * 100.0,
                 self.lazy_window,
             );
@@ -779,21 +773,21 @@ impl App {
         if let (Some(rx_total), Some(tx_total)) =
             (stats.net_rx_bytes_total, stats.net_tx_bytes_total)
         {
-            if let Some(prev) = self.previous_system_net_totals.clone() {
+            if let Some(prev) = self.system_history.previous_net_totals.clone() {
                 let elapsed = captured_at.duration_since(prev.captured_at).as_secs_f64();
                 if elapsed > 0.0 {
                     let rx_bps = rx_total.saturating_sub(prev.rx_total) as f64 / elapsed;
                     let tx_bps = tx_total.saturating_sub(prev.tx_total) as f64 / elapsed;
-                    self.system_net_rx_bps = Some(rx_bps);
-                    self.system_net_tx_bps = Some(tx_bps);
+                    self.system.net_rx_bps = Some(rx_bps);
+                    self.system.net_tx_bps = Some(tx_bps);
                     push_bounded_sample(
-                        &mut self.system_net_history,
+                        &mut self.system_history.net,
                         rx_bps + tx_bps,
                         self.lazy_window,
                     );
                 }
             }
-            self.previous_system_net_totals = Some(NetTotalsSample {
+            self.system_history.previous_net_totals = Some(NetTotalsSample {
                 rx_total,
                 tx_total,
                 captured_at,
@@ -803,16 +797,16 @@ impl App {
         if let (Some(read_total), Some(write_total)) =
             (stats.disk_read_bytes_total, stats.disk_write_bytes_total)
         {
-            if let Some(prev) = self.previous_system_disk_totals.clone() {
+            if let Some(prev) = self.system_history.previous_disk_totals.clone() {
                 let elapsed = captured_at.duration_since(prev.captured_at).as_secs_f64();
                 if elapsed > 0.0 {
-                    self.system_disk_read_bps =
+                    self.system.disk_read_bps =
                         Some(read_total.saturating_sub(prev.read_total) as f64 / elapsed);
-                    self.system_disk_write_bps =
+                    self.system.disk_write_bps =
                         Some(write_total.saturating_sub(prev.write_total) as f64 / elapsed);
                 }
             }
-            self.previous_system_disk_totals = Some(RateTotalsSample {
+            self.system_history.previous_disk_totals = Some(RateTotalsSample {
                 read_total,
                 write_total,
                 captured_at,
@@ -1281,12 +1275,13 @@ fn render_system_overview_header(f: &mut ratatui::Frame<'_>, app: &App, area: Re
         return;
     }
 
-    let cpu_value = app.system_cpu_total_pct.unwrap_or(0.0);
-    let mem_pct = match (app.system_mem_used_mb, app.system_mem_total_mb) {
+    let sys = &app.system;
+    let cpu_value = sys.cpu_total_pct.unwrap_or(0.0);
+    let mem_pct = match (sys.mem_used_mb, sys.mem_total_mb) {
         (Some(used), Some(total)) if total > 0.0 => (used / total) * 100.0,
         _ => 0.0,
     };
-    let swap_pct = match (app.system_swap_used_mb, app.system_swap_total_mb) {
+    let swap_pct = match (sys.swap_used_mb, sys.swap_total_mb) {
         (Some(used), Some(total)) if total > 0.0 => (used / total) * 100.0,
         _ => 0.0,
     };
@@ -1295,16 +1290,12 @@ fn render_system_overview_header(f: &mut ratatui::Frame<'_>, app: &App, area: Re
     let mem_color = threshold_color(threshold_level(mem_pct, 75.0, 90.0));
     let swap_color = threshold_color(threshold_level(swap_pct, 80.0, 95.0));
 
-    let load = match (
-        app.system_load_avg_1,
-        app.system_load_avg_5,
-        app.system_load_avg_15,
-    ) {
+    let load = match (sys.load_avg_1, sys.load_avg_5, sys.load_avg_15) {
         (Some(a), Some(b), Some(c)) => format!("{a:.2}/{b:.2}/{c:.2}"),
         _ => "n/a".to_string(),
     };
-    let uptime = app
-        .system_uptime_seconds
+    let uptime = sys
+        .uptime_seconds
         .map(format_uptime_short)
         .unwrap_or_else(|| "n/a".to_string());
 
