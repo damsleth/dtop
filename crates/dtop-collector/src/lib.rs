@@ -726,6 +726,7 @@ fn parse_linux_stat(stat: &str) -> Option<LinuxStatFields> {
         return None;
     }
 
+    // /proc/[pid]/stat fields after "(comm) state": index 1=ppid, 11=utime, 12=stime (proc(5))
     let ppid = fields.get(1)?.parse::<i32>().ok()?;
     let utime = fields.get(11)?.parse::<u64>().ok()?;
     let stime = fields.get(12)?.parse::<u64>().ok()?;
@@ -864,6 +865,7 @@ fn parse_linux_diskstats_totals(content: &str) -> (Option<u64>, Option<u64>) {
             continue;
         }
 
+        // /proc/diskstats fields: index 5=sectors read, 9=sectors written (Documentation/iostats.txt)
         let Ok(read_sectors) = parts[5].parse::<u64>() else {
             continue;
         };
