@@ -115,7 +115,10 @@ impl Collector for MacPsCollector {
         let (swap_used_mb, swap_total_mb) = collect_swap_stats_mb()?;
         let (load_avg_1, load_avg_5, load_avg_15) = collect_macos_load_avg()?;
         let uptime_seconds = collect_macos_uptime_seconds()?;
-        let (net_rx_bytes_total, net_tx_bytes_total) = collect_network_totals()?;
+        let (net_rx_bytes_total, net_tx_bytes_total) = {
+            let ifaces = self.collect_network_interfaces().unwrap_or_default();
+            sum_interface_totals(&ifaces)
+        };
         let (disk_read_bytes_total, disk_write_bytes_total) = collect_macos_disk_totals()?;
         Ok(Some(SystemStats {
             cpu_total_pct,
@@ -412,16 +415,6 @@ fn parse_macos_uptime_seconds(raw: &str) -> Option<u64> {
     let boot_epoch = sec_token.parse::<u64>().ok()?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
     Some(now.saturating_sub(boot_epoch))
-}
-
-fn collect_network_totals() -> io::Result<(Option<u64>, Option<u64>)> {
-    let output = Command::new("netstat").args(["-ibn"]).output()?;
-    if !output.status.success() {
-        return Ok((None, None));
-    }
-    Ok(sum_interface_totals(&parse_netstat_interface_counters(
-        &String::from_utf8_lossy(&output.stdout),
-    )))
 }
 
 fn collect_macos_disk_counters_by_pid() -> io::Result<HashMap<i32, (u64, u64)>> {
