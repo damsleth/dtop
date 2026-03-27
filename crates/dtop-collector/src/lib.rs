@@ -490,7 +490,7 @@ fn parse_macos_iostat_totals(raw: &str) -> (Option<u64>, Option<u64>) {
 }
 
 fn parse_netstat_interface_counters(stdout: &str) -> Vec<InterfaceCounter> {
-    let mut header: Option<Vec<&str>> = None;
+    let mut col_indices: Option<(usize, usize, usize)> = None;
     let mut per_interface: HashMap<String, (u64, u64)> = HashMap::new();
 
     for line in stdout.lines() {
@@ -499,17 +499,15 @@ fn parse_netstat_interface_counters(stdout: &str) -> Vec<InterfaceCounter> {
             continue;
         }
         if parts[0] == "Name" {
-            header = Some(parts);
+            let name_idx = parts.iter().position(|c| *c == "Name");
+            let rx_idx = parts.iter().position(|c| *c == "Ibytes");
+            let tx_idx = parts.iter().position(|c| *c == "Obytes");
+            if let (Some(n), Some(r), Some(t)) = (name_idx, rx_idx, tx_idx) {
+                col_indices = Some((n, r, t));
+            }
             continue;
         }
-        let Some(columns) = header.as_ref() else {
-            continue;
-        };
-
-        let name_idx = columns.iter().position(|c| *c == "Name");
-        let rx_idx = columns.iter().position(|c| *c == "Ibytes");
-        let tx_idx = columns.iter().position(|c| *c == "Obytes");
-        let (Some(name_idx), Some(rx_idx), Some(tx_idx)) = (name_idx, rx_idx, tx_idx) else {
+        let Some((name_idx, rx_idx, tx_idx)) = col_indices else {
             continue;
         };
         let max_idx = name_idx.max(rx_idx).max(tx_idx);
