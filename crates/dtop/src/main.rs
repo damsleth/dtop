@@ -22,17 +22,19 @@ use dtop_core::{
     FilterState, MetricHistory, ProcEntry, ProcSnapshotEntry, SortBy, SortState, median,
 };
 use dtop_ui::{
-    HelpModalData, KillModalData, ThresholdLevel, format_uptime_short, is_ctrl_c_quit,
-    is_search_input_char, render_help_modal, render_kill_modal, sort_header_style, sparkline,
-    threshold_color, threshold_level, truncate_to_width,
+    HelpModalData, KillModalData, NetworkRowData, NetworkSortBy, NetworkTableData,
+    ProcessRowData, ProcessTableData, StatusLineData, SystemHeaderData,
+    draw_network_table, draw_process_table, format_bytes_per_second,
+    is_ctrl_c_quit, is_search_input_char, render_help_modal, render_kill_modal,
+    render_status_line, render_system_overview_header,
 };
 use libc::{SIGINT, SIGKILL, SIGTERM, kill};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Cell, Paragraph, Row, Table};
+use ratatui::widgets::Paragraph;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GraphMode {
@@ -80,14 +82,6 @@ impl ViewMode {
             ViewMode::Network => "Network",
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum NetworkSortBy {
-    Rx,
-    Tx,
-    Total,
-    Name,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1191,7 +1185,19 @@ fn draw_ui(f: &mut ratatui::Frame<'_>, app: &App) -> usize {
         width: area.width,
         height: 1,
     };
-    render_system_overview_header(f, app, header_area);
+    let sys = &app.system;
+    let sys_data = SystemHeaderData {
+        cpu_total_pct: sys.cpu_total_pct.unwrap_or(0.0),
+        mem_used_mb: sys.mem_used_mb,
+        mem_total_mb: sys.mem_total_mb,
+        swap_used_mb: sys.swap_used_mb,
+        swap_total_mb: sys.swap_total_mb,
+        load_avg_1: sys.load_avg_1,
+        load_avg_5: sys.load_avg_5,
+        load_avg_15: sys.load_avg_15,
+        uptime_seconds: sys.uptime_seconds,
+    };
+    render_system_overview_header(f, &sys_data, header_area);
     y = y.saturating_add(1);
 
     let status_area = Rect {
@@ -1212,8 +1218,82 @@ fn draw_ui(f: &mut ratatui::Frame<'_>, app: &App) -> usize {
         height: content_height,
     };
 
-    let visible_rows = draw_table(f, app, content_area);
-    render_status_line(f, app, status_area);
+    let visible_rows = {
+        if content_area.width == 0 || content_area.height == 0 {
+            0
+        } else {
+            let vis = content_area.height.saturating_sub(1) as usize;
+            let start_index = app.selected_index.unwrap_or(0).saturating_sub(vis / 2);
+            match app.view_mode {
+                ViewMode::Process => {
+                    let rows: Vec<ProcessRowData> = app.current_processes.iter().map(|p| {
+                        let (cpu_hist, mem_hist) = app.metric_history.get(&p.name)
+                            .map(|h| (h.cpu.clone(), h.mem.clone()))
+                            .unwrap_or_default();
+                        ProcessRowData {
+                            name: p.name.clone(),
+                            cpu: p.cpu,
+                            cpu_lazy: p.cpu_lazy,
+                            cpu_delta: p.cpu_delta,
+                            mem_mb: p.mem_mb,
+                            mem_lazy: p.mem_lazy,
+                            mem_delta_mb: p.mem_delta_mb,
+                            disk_read_bps: p.disk_read_bps,
+                            disk_write_bps: p.disk_write_bps,
+                            is_new: p.is_new,
+                            count: p.count,
+                            cpu_history: cpu_hist,
+                            mem_history: mem_hist,
+                        }
+                    }).collect();
+                    let data = ProcessTableData {
+                        rows: &rows,
+                        filtered_indices: &app.filtered_indices,
+                        selected_index: app.selected_index,
+                        sort_by: app.sort_state.by,
+                        delta_mode: app.delta_mode,
+                        lazy_mode: app.lazy_mode,
+                        show_disk_columns: app.show_disk_columns,
+                        graph_enabled: app.graph_mode.show_list(),
+                    };
+                    draw_process_table(f, &data, content_area, start_index, vis)
+                }
+                ViewMode::Network => {
+                    let rows: Vec<NetworkRowData> = app.network_rows.iter().map(|n| {
+                        NetworkRowData {
+                            name: n.name.clone(),
+                            rx_bps: n.rx_bps,
+                            tx_bps: n.tx_bps,
+                            total_bps: n.total_bps,
+                        }
+                    }).collect();
+                    let data = NetworkTableData {
+                        rows: &rows,
+                        filtered_indices: &app.filtered_indices,
+                        selected_index: app.selected_index,
+                        sort_by: app.network_sort_by,
+                    };
+                    draw_network_table(f, &data, content_area, start_index, vis)
+                }
+            }
+        }
+    };
+
+    let status_data = StatusLineData {
+        view_label: app.view_mode.label(),
+        sort_label: app.sort_state.by.label(),
+        sort_descending: app.sort_state.descending,
+        poll_interval_ms: app.poll_interval_ms,
+        last_poll_ms: app.last_poll_ms,
+        last_parse_ms: app.last_parse_ms,
+        last_render_ms: app.last_render_ms,
+        recent_exited_commands: &app.recent_exited_commands,
+        action_audit_line: app.action_audit_line.as_deref(),
+        last_snapshot_path: app.last_snapshot_path.as_deref(),
+        status_error: app.status_error.as_deref(),
+        is_network_view: app.view_mode == ViewMode::Network,
+    };
+    render_status_line(f, &status_data, status_area);
 
     if app.show_help {
         let help_data = HelpModalData {
@@ -1246,358 +1326,7 @@ fn draw_ui(f: &mut ratatui::Frame<'_>, app: &App) -> usize {
     visible_rows
 }
 
-fn render_system_overview_header(f: &mut ratatui::Frame<'_>, app: &App, area: Rect) {
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
 
-    let sys = &app.system;
-    let cpu_value = sys.cpu_total_pct.unwrap_or(0.0);
-    let mem_pct = match (sys.mem_used_mb, sys.mem_total_mb) {
-        (Some(used), Some(total)) if total > 0.0 => (used / total) * 100.0,
-        _ => 0.0,
-    };
-    let swap_pct = match (sys.swap_used_mb, sys.swap_total_mb) {
-        (Some(used), Some(total)) if total > 0.0 => (used / total) * 100.0,
-        _ => 0.0,
-    };
-
-    let cpu_color = threshold_color(threshold_level(cpu_value, 70.0, 90.0));
-    let mem_color = threshold_color(threshold_level(mem_pct, 75.0, 90.0));
-    let swap_color = threshold_color(threshold_level(swap_pct, 80.0, 95.0));
-
-    let load = match (sys.load_avg_1, sys.load_avg_5, sys.load_avg_15) {
-        (Some(a), Some(b), Some(c)) => format!("{a:.2}/{b:.2}/{c:.2}"),
-        _ => "n/a".to_string(),
-    };
-    let uptime = sys
-        .uptime_seconds
-        .map(format_uptime_short)
-        .unwrap_or_else(|| "n/a".to_string());
-
-    let compact = area.width < 120;
-    let mut spans = Vec::new();
-
-    if compact {
-        spans.push(Span::raw("SYS "));
-        spans.push(Span::styled(
-            format!("CPU {:.0}% ", cpu_value),
-            Style::default().fg(cpu_color),
-        ));
-        spans.push(Span::styled(
-            format!("MEM {:.0}% ", mem_pct),
-            Style::default().fg(mem_color),
-        ));
-        spans.push(Span::styled(
-            format!("SWP {:.0}% ", swap_pct),
-            Style::default().fg(swap_color),
-        ));
-        spans.push(Span::raw(format!("L {load} U {uptime}")));
-    } else {
-        spans.push(Span::raw("System "));
-        spans.push(Span::styled(
-            format!("CPU {:>5.1}%  ", cpu_value),
-            Style::default().fg(cpu_color),
-        ));
-        spans.push(Span::styled(
-            format!("MEM {:>5.1}%  ", mem_pct),
-            Style::default().fg(mem_color),
-        ));
-        spans.push(Span::styled(
-            format!("SWAP {:>5.1}%  ", swap_pct),
-            Style::default().fg(swap_color),
-        ));
-        spans.push(Span::raw(format!("LOAD {load}  UPTIME {uptime}")));
-    }
-
-    f.render_widget(Paragraph::new(Line::from(spans)), area);
-}
-
-fn draw_table(f: &mut ratatui::Frame<'_>, app: &App, area: Rect) -> usize {
-    if area.width == 0 || area.height == 0 {
-        return 0;
-    }
-
-    let visible_rows = area.height.saturating_sub(1) as usize;
-    let start_index = app
-        .selected_index
-        .unwrap_or(0)
-        .saturating_sub(visible_rows / 2);
-
-    match app.view_mode {
-        ViewMode::Process => draw_process_table(f, app, area, start_index, visible_rows),
-        ViewMode::Network => draw_network_table(f, app, area, start_index, visible_rows),
-    }
-}
-
-fn draw_process_table(
-    f: &mut ratatui::Frame<'_>,
-    app: &App,
-    area: Rect,
-    start_index: usize,
-    visible_rows: usize,
-) -> usize {
-    let name_width = if app.show_disk_columns {
-        area.width.saturating_sub(46)
-    } else {
-        area.width.saturating_sub(30)
-    };
-    let graph_width: u16 = 8;
-    let graph_enabled = app.graph_mode.show_list() && area.width > 80;
-
-    let mut header_cells = vec![
-        Cell::from(Span::styled(
-            truncate_to_width("PROCESS", name_width as usize),
-            sort_header_style(app.sort_state.by == SortBy::Name),
-        )),
-        Cell::from(Span::styled(
-            if app.delta_mode { "CPU Δ" } else { "CPU%" },
-            sort_header_style(matches!(app.sort_state.by, SortBy::Cpu | SortBy::CpuDelta)),
-        )),
-        Cell::from(Span::styled(
-            if app.delta_mode { "MEM Δ" } else { "MEM(MB)" },
-            sort_header_style(matches!(app.sort_state.by, SortBy::Mem | SortBy::MemDelta)),
-        )),
-    ];
-
-    let mut constraints = vec![
-        Constraint::Length(name_width.max(1)),
-        Constraint::Length(10),
-        Constraint::Length(10),
-    ];
-
-    if app.show_disk_columns {
-        header_cells.push(Cell::from(Span::styled(
-            "READ/s",
-            sort_header_style(app.sort_state.by == SortBy::DiskRead),
-        )));
-        header_cells.push(Cell::from(Span::styled(
-            "WRITE/s",
-            sort_header_style(app.sort_state.by == SortBy::DiskWrite),
-        )));
-        constraints.push(Constraint::Length(10));
-        constraints.push(Constraint::Length(10));
-    }
-
-    if graph_enabled {
-        header_cells.push(Cell::from("CPU ▄"));
-        header_cells.push(Cell::from("MEM ▄"));
-        constraints.push(Constraint::Length(graph_width));
-        constraints.push(Constraint::Length(graph_width));
-    }
-
-    let header = Row::new(header_cells).height(1);
-    let mut rows = Vec::new();
-
-    for row_i in 0..visible_rows {
-        let list_index = start_index + row_i;
-        if list_index >= app.filtered_indices.len() {
-            break;
-        }
-        let real_idx = app.filtered_indices[list_index];
-        let Some(proc) = app.current_processes.get(real_idx) else {
-            continue;
-        };
-
-        let mut display_name = proc.name.clone();
-        if proc.count > 1 {
-            display_name.push_str(&format!(" ({})", proc.count));
-        }
-        if proc.is_new {
-            display_name = format!("+ {display_name}");
-        }
-
-        let cpu_display = if app.delta_mode {
-            format!("{:+.2}", proc.cpu_delta)
-        } else if app.lazy_mode {
-            format!("{:.2}", proc.cpu_lazy)
-        } else {
-            format!("{:.2}", proc.cpu)
-        };
-
-        let mem_display = if app.delta_mode {
-            format!("{:+.2}", proc.mem_delta_mb)
-        } else if app.lazy_mode {
-            format!("{:.2}", proc.mem_lazy)
-        } else {
-            format!("{:.2}", proc.mem_mb)
-        };
-
-        let mut style = Style::default();
-        let alert_value = if app.delta_mode {
-            proc.cpu_delta.abs()
-        } else if app.lazy_mode {
-            proc.cpu_lazy
-        } else {
-            proc.cpu
-        };
-        style = style.fg(match threshold_level(alert_value, 20.0, 50.0) {
-            ThresholdLevel::Normal => Color::Reset,
-            ThresholdLevel::Warning => Color::Yellow,
-            ThresholdLevel::Critical => Color::Red,
-        });
-
-        if app.selected_index == Some(list_index) {
-            style = style.add_modifier(Modifier::REVERSED);
-        }
-
-        let mut cells = vec![
-            Cell::from(truncate_to_width(&display_name, name_width as usize)),
-            Cell::from(cpu_display),
-            Cell::from(mem_display),
-        ];
-
-        if app.show_disk_columns {
-            cells.push(Cell::from(format_bytes_per_second(proc.disk_read_bps)));
-            cells.push(Cell::from(format_bytes_per_second(proc.disk_write_bps)));
-        }
-
-        if graph_enabled {
-            if let Some(history) = app.metric_history.get(&proc.name) {
-                cells.push(Cell::from(sparkline(&history.cpu, graph_width as usize)));
-                cells.push(Cell::from(sparkline(&history.mem, graph_width as usize)));
-            } else {
-                cells.push(Cell::from(" ".repeat(graph_width as usize)));
-                cells.push(Cell::from(" ".repeat(graph_width as usize)));
-            }
-        }
-
-        rows.push(Row::new(cells).style(style));
-    }
-
-    let table = Table::new(rows, constraints)
-        .header(header)
-        .column_spacing(1);
-    f.render_widget(table, area);
-
-    visible_rows
-}
-
-fn draw_network_table(
-    f: &mut ratatui::Frame<'_>,
-    app: &App,
-    area: Rect,
-    start_index: usize,
-    visible_rows: usize,
-) -> usize {
-    let name_width = area.width.saturating_sub(36);
-    let header = Row::new(vec![
-        Cell::from(Span::styled(
-            truncate_to_width("INTERFACE", name_width as usize),
-            sort_header_style(app.network_sort_by == NetworkSortBy::Name),
-        )),
-        Cell::from(Span::styled(
-            "RX/s",
-            sort_header_style(app.network_sort_by == NetworkSortBy::Rx),
-        )),
-        Cell::from(Span::styled(
-            "TX/s",
-            sort_header_style(app.network_sort_by == NetworkSortBy::Tx),
-        )),
-        Cell::from(Span::styled(
-            "TOTAL/s",
-            sort_header_style(app.network_sort_by == NetworkSortBy::Total),
-        )),
-    ])
-    .height(1);
-
-    let mut rows = Vec::new();
-    for row_i in 0..visible_rows {
-        let list_index = start_index + row_i;
-        if list_index >= app.filtered_indices.len() {
-            break;
-        }
-        let real_idx = app.filtered_indices[list_index];
-        let Some(net) = app.network_rows.get(real_idx) else {
-            continue;
-        };
-
-        let mut style = Style::default();
-        if app.selected_index == Some(list_index) {
-            style = style.add_modifier(Modifier::REVERSED);
-        }
-
-        rows.push(
-            Row::new(vec![
-                Cell::from(truncate_to_width(&net.name, name_width as usize)),
-                Cell::from(format_bytes_per_second(net.rx_bps)),
-                Cell::from(format_bytes_per_second(net.tx_bps)),
-                Cell::from(format_bytes_per_second(net.total_bps)),
-            ])
-            .style(style),
-        );
-    }
-
-    let table = Table::new(
-        rows,
-        vec![
-            Constraint::Length(name_width.max(1)),
-            Constraint::Length(10),
-            Constraint::Length(10),
-            Constraint::Length(10),
-        ],
-    )
-    .header(header)
-    .column_spacing(1);
-    f.render_widget(table, area);
-
-    visible_rows
-}
-
-fn render_status_line(f: &mut ratatui::Frame<'_>, app: &App, area: Rect) {
-    let mut status = format!(
-        "{} | Sort={}{} | Poll={}ms | Timing P {:.1}ms Parse {:.1}ms Render {:.1}ms",
-        app.view_mode.label(),
-        app.sort_state.by.label(),
-        if app.sort_state.descending {
-            "↓"
-        } else {
-            "↑"
-        },
-        app.poll_interval_ms,
-        app.last_poll_ms,
-        app.last_parse_ms,
-        app.last_render_ms,
-    );
-
-    if !app.recent_exited_commands.is_empty() {
-        status.push_str(&format!(
-            " | Exited: {}",
-            app.recent_exited_commands.join(", ")
-        ));
-    }
-    if let Some(line) = app.action_audit_line.as_ref() {
-        status.push_str(&format!(" | Audit: {line}"));
-    }
-    if let Some(path) = app.last_snapshot_path.as_ref() {
-        status.push_str(&format!(" | Snapshot: {path}"));
-    }
-    if let Some(err) = app.status_error.as_ref() {
-        status.push_str(&format!(" | Error: {err}"));
-    }
-    if app.view_mode == ViewMode::Network {
-        status.push_str(" | Interface-level throughput view");
-    }
-    f.render_widget(
-        Paragraph::new(truncate_to_width(&status, area.width as usize)),
-        area,
-    );
-}
-
-fn format_bytes_per_second(bytes_per_second: f64) -> String {
-    const KB: f64 = 1024.0;
-    const MB: f64 = KB * 1024.0;
-    const GB: f64 = MB * 1024.0;
-    if bytes_per_second >= GB {
-        format!("{:.2} GB/s", bytes_per_second / GB)
-    } else if bytes_per_second >= MB {
-        format!("{:.2} MB/s", bytes_per_second / MB)
-    } else if bytes_per_second >= KB {
-        format!("{:.1} KB/s", bytes_per_second / KB)
-    } else {
-        format!("{:.0} B/s", bytes_per_second)
-    }
-}
 
 struct JsonArray {
     buf: String,
