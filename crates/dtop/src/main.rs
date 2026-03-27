@@ -258,7 +258,6 @@ struct AppConfig {
     graph_mode: GraphMode,
     require_typed_confirmation: bool,
     key_overrides: HashMap<String, String>,
-    theme: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -270,7 +269,6 @@ impl Default for AppConfig {
             graph_mode: GraphMode::Off,
             require_typed_confirmation: false,
             key_overrides: HashMap::new(),
-            theme: None,
         }
     }
 }
@@ -338,7 +336,6 @@ struct App {
     last_render_ms: f64,
     last_snapshot_path: Option<String>,
     status_error: Option<String>,
-    theme_name: Option<String>,
 }
 
 type GroupedProcess = (f64, f64, usize, Vec<i32>, f64, f64);
@@ -413,7 +410,6 @@ impl App {
             last_render_ms: 0.0,
             last_snapshot_path: None,
             status_error: None,
-            theme_name: cfg.theme,
         };
         this.poll_interval_shared
             .store(this.poll_interval_ms, Ordering::Relaxed);
@@ -1599,10 +1595,6 @@ fn render_status_line(f: &mut ratatui::Frame<'_>, app: &App, area: Rect) {
     if app.view_mode == ViewMode::Network {
         status.push_str(" | Interface-level throughput view");
     }
-    if let Some(theme) = app.theme_name.as_ref() {
-        status.push_str(&format!(" | Theme: {theme}"));
-    }
-
     f.render_widget(
         Paragraph::new(truncate_to_width(&status, area.width as usize)),
         area,
@@ -1742,9 +1734,6 @@ fn load_config() -> Result<AppConfig, String> {
                             line_no + 1
                         )
                     })?;
-                }
-                "theme" => {
-                    cfg.theme = parse_string_value(value);
                 }
                 _ => {}
             },
@@ -2114,7 +2103,6 @@ mod tests {
             graph_mode: super::GraphMode::Off,
             require_typed_confirmation: true,
             key_overrides: HashMap::new(),
-            theme: None,
         };
         let key_registry = KeyRegistry {
             by_key: HashMap::new(),
