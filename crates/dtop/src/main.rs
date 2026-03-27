@@ -439,7 +439,7 @@ impl App {
             }
             ViewMode::Network => {
                 self.filtered_indices
-                    .extend((0..self.network_rows.len()).collect::<Vec<usize>>());
+                    .extend(0..self.network_rows.len());
                 self.filtered_indices.len()
             }
         };
