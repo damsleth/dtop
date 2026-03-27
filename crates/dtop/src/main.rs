@@ -1951,9 +1951,7 @@ fn start_sampler_thread(
 
             match tx.try_send(packet) {
                 Ok(_) => {}
-                Err(TrySendError::Full(packet)) => {
-                    let _ = tx.send(packet);
-                }
+                Err(TrySendError::Full(_)) => {} // drop stale packet
                 Err(TrySendError::Disconnected(_)) => break,
             }
 
