@@ -110,7 +110,8 @@ impl Collector for MacPsCollector {
     }
 
     fn collect_system_stats(&self) -> io::Result<Option<SystemStats>> {
-        let cpu_total_pct = collect_cpu_total_pct()?;
+        let processes = self.collect_processes()?;
+        let cpu_total_pct = cpu_total_from_processes(&processes);
         let (mem_used_mb, mem_total_mb) = collect_memory_stats_mb()?;
         let (swap_used_mb, swap_total_mb) = collect_swap_stats_mb()?;
         let (load_avg_1, load_avg_5, load_avg_15) = collect_macos_load_avg()?;
@@ -249,25 +250,11 @@ fn parse_ps_output(stdout: &str) -> Vec<ProcessRecord> {
     rows
 }
 
-fn collect_cpu_total_pct() -> io::Result<Option<f64>> {
-    let output = Command::new("ps").args(["-A", "-o", "%cpu="]).output()?;
-    if !output.status.success() {
-        return Ok(None);
+fn cpu_total_from_processes(processes: &[ProcessRecord]) -> Option<f64> {
+    if processes.is_empty() {
+        return None;
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut sum = 0.0;
-    let mut count = 0usize;
-    for line in stdout.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if let Ok(v) = trimmed.parse::<f64>() {
-            sum += v;
-            count += 1;
-        }
-    }
-    if count == 0 { Ok(None) } else { Ok(Some(sum)) }
+    Some(processes.iter().map(|p| p.cpu).sum())
 }
 
 fn collect_memory_stats_mb() -> io::Result<(Option<f64>, Option<f64>)> {
