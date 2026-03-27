@@ -338,7 +338,14 @@ struct App {
     status_error: Option<String>,
 }
 
-type GroupedProcess = (f64, f64, usize, Vec<i32>, f64, f64);
+struct GroupedProcess {
+    cpu: f64,
+    mem_mb: f64,
+    count: usize,
+    pids: Vec<i32>,
+    disk_read_bps: f64,
+    disk_write_bps: f64,
+}
 
 impl App {
     fn new(
@@ -882,16 +889,22 @@ impl App {
                 next_pid_disk_totals.insert(process.pid, (read_total, write_total));
             }
 
-            let entry =
-                grouped
-                    .entry(process.name.clone())
-                    .or_insert((0.0, 0.0, 0, Vec::new(), 0.0, 0.0));
-            entry.0 += process.cpu;
-            entry.1 += process.mem_mb;
-            entry.2 += 1;
-            entry.3.push(process.pid);
-            entry.4 += disk_read_bps;
-            entry.5 += disk_write_bps;
+            let entry = grouped
+                .entry(process.name.clone())
+                .or_insert(GroupedProcess {
+                    cpu: 0.0,
+                    mem_mb: 0.0,
+                    count: 0,
+                    pids: Vec::new(),
+                    disk_read_bps: 0.0,
+                    disk_write_bps: 0.0,
+                });
+            entry.cpu += process.cpu;
+            entry.mem_mb += process.mem_mb;
+            entry.count += 1;
+            entry.pids.push(process.pid);
+            entry.disk_read_bps += disk_read_bps;
+            entry.disk_write_bps += disk_write_bps;
 
             snapshot.push(ProcSnapshotEntry {
                 pid: process.pid,
@@ -921,18 +934,18 @@ impl App {
         let mut proc_list = Vec::new();
         let mut refreshed_pids = HashMap::new();
 
-        for (name, (cpu, mem_mb, count, pids, disk_read_bps, disk_write_bps)) in grouped {
-            refreshed_pids.insert(name.clone(), pids);
+        for (name, group) in grouped {
+            refreshed_pids.insert(name.clone(), group.pids);
             let (prev_cpu, prev_mem) = self
                 .previous_command_totals
                 .get(&name)
                 .copied()
                 .unwrap_or((0.0, 0.0));
-            next_previous.insert(name.clone(), (cpu, mem_mb));
+            next_previous.insert(name.clone(), (group.cpu, group.mem_mb));
 
             let is_new = !self.previous_command_totals.contains_key(&name);
-            let cpu_delta = cpu - prev_cpu;
-            let mem_delta_mb = mem_mb - prev_mem;
+            let cpu_delta = group.cpu - prev_cpu;
+            let mem_delta_mb = group.mem_mb - prev_mem;
 
             let history =
                 self.metric_history
@@ -941,21 +954,21 @@ impl App {
                         cpu: VecDeque::with_capacity(self.lazy_window),
                         mem: VecDeque::with_capacity(self.lazy_window),
                     });
-            push_bounded_sample(&mut history.cpu, cpu, self.lazy_window);
-            push_bounded_sample(&mut history.mem, mem_mb, self.lazy_window);
+            push_bounded_sample(&mut history.cpu, group.cpu, self.lazy_window);
+            push_bounded_sample(&mut history.mem, group.mem_mb, self.lazy_window);
 
             proc_list.push(ProcEntry {
                 name,
-                cpu,
-                mem_mb,
-                disk_read_bps,
-                disk_write_bps,
+                cpu: group.cpu,
+                mem_mb: group.mem_mb,
+                disk_read_bps: group.disk_read_bps,
+                disk_write_bps: group.disk_write_bps,
                 cpu_delta,
                 mem_delta_mb,
                 is_new,
-                count,
-                cpu_lazy: median(&history.cpu).unwrap_or(cpu),
-                mem_lazy: median(&history.mem).unwrap_or(mem_mb),
+                count: group.count,
+                cpu_lazy: median(&history.cpu).unwrap_or(group.cpu),
+                mem_lazy: median(&history.mem).unwrap_or(group.mem_mb),
             });
         }
 
