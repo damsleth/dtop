@@ -20,7 +20,6 @@ use dtop_collector::{
 };
 use dtop_core::{
     FilterState, MetricHistory, ProcEntry, ProcSnapshotEntry, SortBy, SortState, median,
-    shrink_deque,
 };
 use dtop_ui::{
     HelpModalData, KillModalData, ThresholdLevel, format_uptime_short, is_ctrl_c_quit,
@@ -938,16 +937,8 @@ impl App {
                         cpu: VecDeque::with_capacity(self.lazy_window),
                         mem: VecDeque::with_capacity(self.lazy_window),
                     });
-            shrink_deque(&mut history.cpu, self.lazy_window);
-            shrink_deque(&mut history.mem, self.lazy_window);
-            history.cpu.push_back(cpu);
-            history.mem.push_back(mem_mb);
-            while history.cpu.len() > self.lazy_window {
-                history.cpu.pop_front();
-            }
-            while history.mem.len() > self.lazy_window {
-                history.mem.pop_front();
-            }
+            push_bounded_sample(&mut history.cpu, cpu, self.lazy_window);
+            push_bounded_sample(&mut history.mem, mem_mb, self.lazy_window);
 
             proc_list.push(ProcEntry {
                 name,
