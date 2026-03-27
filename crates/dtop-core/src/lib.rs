@@ -16,13 +16,6 @@ pub struct ProcEntry {
 }
 
 #[derive(Clone, Debug)]
-pub struct DetailEntry {
-    pub pid: i32,
-    pub cpu: f64,
-    pub mem_mb: f64,
-}
-
-#[derive(Clone, Debug)]
 pub struct ProcSnapshotEntry {
     pub pid: i32,
     pub ppid: i32,
@@ -31,17 +24,6 @@ pub struct ProcSnapshotEntry {
     pub mem_mb: f64,
     pub disk_read_bytes_total: Option<u64>,
     pub disk_write_bytes_total: Option<u64>,
-}
-
-#[derive(Clone, Debug)]
-pub struct TreeRow {
-    pub pid: i32,
-    pub name: String,
-    pub cpu: f64,
-    pub mem_mb: f64,
-    pub depth: usize,
-    pub has_children: bool,
-    pub expanded: bool,
 }
 
 #[derive(Clone, Debug)]
