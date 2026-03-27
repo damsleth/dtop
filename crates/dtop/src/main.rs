@@ -583,15 +583,16 @@ impl App {
                 for pid in &pids {
                     if let Err(err) = self.process_controller.send_signal(*pid, signal.as_raw()) {
                         errors.push(err.to_string());
-                        continue;
                     }
+                }
 
-                    if graceful_then_force && signal != SignalChoice::Kill {
-                        thread::sleep(Duration::from_millis(300));
-                        if self.process_controller.is_alive(*pid)
-                            && let Err(err) = self.process_controller.send_signal(*pid, SIGKILL)
-                        {
-                            errors.push(err.to_string());
+                if graceful_then_force && signal != SignalChoice::Kill {
+                    thread::sleep(Duration::from_millis(300));
+                    for pid in &pids {
+                        if self.process_controller.is_alive(*pid) {
+                            if let Err(err) = self.process_controller.send_signal(*pid, SIGKILL) {
+                                errors.push(err.to_string());
+                            }
                         }
                     }
                 }
