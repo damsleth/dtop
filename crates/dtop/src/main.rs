@@ -1808,9 +1808,7 @@ fn load_config() -> Result<AppConfig, String> {
                 _ => {}
             },
             "keymap" => {
-                let Some(key_name) = parse_string_value(key) else {
-                    continue;
-                };
+                let key_name = key.trim_matches(|c| c == '"' || c == '\'').to_string();
                 let Some(key_spec) = parse_string_value(value) else {
                     return Err(format!(
                         "invalid config {}:{}: keymap values must be strings",
