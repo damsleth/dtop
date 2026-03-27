@@ -1940,7 +1940,6 @@ fn start_sampler_thread(
     let (tx, rx): (SyncSender<SamplerPacket>, Receiver<SamplerPacket>) = sync_channel(1);
 
     thread::spawn(move || {
-        let collector = collector;
         while !stop_flag.load(Ordering::Relaxed) {
             let loop_start = Instant::now();
 
