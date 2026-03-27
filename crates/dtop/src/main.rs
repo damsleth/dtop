@@ -286,6 +286,7 @@ struct App {
     poll_interval_shared: Arc<AtomicU64>,
     sort_state: SortState,
     network_sort_by: NetworkSortBy,
+    network_sort_descending: bool,
     view_mode: ViewMode,
     lazy_mode: bool,
     delta_mode: bool,
@@ -360,6 +361,7 @@ impl App {
             poll_interval_shared,
             sort_state,
             network_sort_by: NetworkSortBy::Total,
+            network_sort_descending: true,
             view_mode: ViewMode::Process,
             lazy_mode: true,
             delta_mode: false,
@@ -680,7 +682,13 @@ impl App {
             Action::SortDiskWrite => {
                 self.sort_state.by = SortBy::DiskWrite;
             }
-            Action::ReverseSort => self.sort_state.descending = !self.sort_state.descending,
+            Action::ReverseSort => {
+                if self.view_mode == ViewMode::Network {
+                    self.network_sort_descending = !self.network_sort_descending;
+                } else {
+                    self.sort_state.descending = !self.sort_state.descending;
+                }
+            }
             Action::MoveDown => self.move_selection(1, visible_rows, false),
             Action::MoveUp => self.move_selection(-1, visible_rows, false),
             Action::PageDown => self.move_selection(1, visible_rows, true),
@@ -839,7 +847,7 @@ impl App {
                 rows.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
             }
         }
-        if self.sort_state.descending {
+        if self.network_sort_descending {
             rows.reverse();
         }
         self.network_rows = rows;
