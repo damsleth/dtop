@@ -625,8 +625,8 @@ fn collect_linux_procfs_processes(
         }
     }
 
-    guard.last_total_jiffies = Some(total_jiffies);
     guard.last_proc_jiffies = proc_jiffies_now;
+    // last_total_jiffies is updated by collect_linux_system_stats to avoid double-write
 
     Ok(entries)
 }
