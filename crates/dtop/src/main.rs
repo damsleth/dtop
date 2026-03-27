@@ -1021,56 +1021,32 @@ impl App {
             json_escape(&self.filter_state.search_query)
         ));
         json.push_str("  \"top_n\": 25,\n");
-        json.push_str("  \"process_rows\": [\n");
-        for (idx, row) in process_rows.iter().enumerate() {
-            json.push_str("    {\n");
-            json.push_str(&format!(
-                "      \"name\": \"{}\",\n",
-                json_escape(&row.name)
-            ));
-            json.push_str(&format!("      \"cpu\": {:.6},\n", row.cpu));
-            json.push_str(&format!("      \"mem_mb\": {:.6},\n", row.mem_mb));
-            json.push_str(&format!("      \"cpu_delta\": {:.6},\n", row.cpu_delta));
-            json.push_str(&format!(
-                "      \"mem_delta_mb\": {:.6},\n",
-                row.mem_delta_mb
-            ));
-            json.push_str(&format!(
-                "      \"disk_read_bps\": {:.6},\n",
-                row.disk_read_bps
-            ));
-            json.push_str(&format!(
-                "      \"disk_write_bps\": {:.6},\n",
-                row.disk_write_bps
-            ));
-            json.push_str(&format!(
-                "      \"is_new\": {}\n",
-                if row.is_new { "true" } else { "false" }
-            ));
-            json.push_str("    }");
-            if idx + 1 != process_rows.len() {
-                json.push(',');
-            }
-            json.push('\n');
+
+        let mut proc_arr = JsonArray::new("    ");
+        for row in &process_rows {
+            proc_arr.push_object(&[
+                ("name", JsonValue::Str(row.name.clone())),
+                ("cpu", JsonValue::Float(row.cpu)),
+                ("mem_mb", JsonValue::Float(row.mem_mb)),
+                ("cpu_delta", JsonValue::Float(row.cpu_delta)),
+                ("mem_delta_mb", JsonValue::Float(row.mem_delta_mb)),
+                ("disk_read_bps", JsonValue::Float(row.disk_read_bps)),
+                ("disk_write_bps", JsonValue::Float(row.disk_write_bps)),
+                ("is_new", JsonValue::Bool(row.is_new)),
+            ]);
         }
-        json.push_str("  ],\n");
-        json.push_str("  \"network_rows\": [\n");
-        for (idx, row) in network_rows.iter().enumerate() {
-            json.push_str("    {\n");
-            json.push_str(&format!(
-                "      \"name\": \"{}\",\n",
-                json_escape(&row.name)
-            ));
-            json.push_str(&format!("      \"rx_bps\": {:.6},\n", row.rx_bps));
-            json.push_str(&format!("      \"tx_bps\": {:.6},\n", row.tx_bps));
-            json.push_str(&format!("      \"total_bps\": {:.6}\n", row.total_bps));
-            json.push_str("    }");
-            if idx + 1 != network_rows.len() {
-                json.push(',');
-            }
-            json.push('\n');
+        json.push_str(&format!("  \"process_rows\": {},\n", proc_arr.finish()));
+
+        let mut net_arr = JsonArray::new("    ");
+        for row in &network_rows {
+            net_arr.push_object(&[
+                ("name", JsonValue::Str(row.name.clone())),
+                ("rx_bps", JsonValue::Float(row.rx_bps)),
+                ("tx_bps", JsonValue::Float(row.tx_bps)),
+                ("total_bps", JsonValue::Float(row.total_bps)),
+            ]);
         }
-        json.push_str("  ]\n");
+        json.push_str(&format!("  \"network_rows\": {}\n", net_arr.finish()));
         json.push_str("}\n");
         fs::write(&json_path, json)?;
 
@@ -1620,6 +1596,67 @@ fn format_bytes_per_second(bytes_per_second: f64) -> String {
         format!("{:.1} KB/s", bytes_per_second / KB)
     } else {
         format!("{:.0} B/s", bytes_per_second)
+    }
+}
+
+struct JsonArray {
+    buf: String,
+    indent: &'static str,
+    count: usize,
+}
+
+impl JsonArray {
+    fn new(indent: &'static str) -> Self {
+        Self {
+            buf: String::from("[\n"),
+            indent,
+            count: 0,
+        }
+    }
+
+    fn push_object(&mut self, fields: &[(&str, JsonValue)]) {
+        if self.count > 0 {
+            self.buf.push_str(",\n");
+        }
+        self.buf.push_str(self.indent);
+        self.buf.push_str("{\n");
+        for (i, (key, val)) in fields.iter().enumerate() {
+            self.buf.push_str(self.indent);
+            self.buf.push_str("  ");
+            self.buf
+                .push_str(&format!("\"{}\": {}", key, val.render()));
+            if i + 1 < fields.len() {
+                self.buf.push(',');
+            }
+            self.buf.push('\n');
+        }
+        self.buf.push_str(self.indent);
+        self.buf.push('}');
+        self.count += 1;
+    }
+
+    fn finish(mut self) -> String {
+        self.buf.push('\n');
+        self.buf
+            .push_str(self.indent.strip_suffix("  ").unwrap_or(""));
+        self.buf.push(']');
+        self.buf
+    }
+}
+
+enum JsonValue {
+    Str(String),
+    Float(f64),
+    Bool(bool),
+}
+
+impl JsonValue {
+    fn render(&self) -> String {
+        match self {
+            JsonValue::Str(s) => format!("\"{}\"", json_escape(s)),
+            JsonValue::Float(v) => format!("{v:.6}"),
+            JsonValue::Bool(b) => b.to_string(),
+        }
     }
 }
 
