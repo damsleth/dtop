@@ -739,9 +739,10 @@ fn parse_linux_stat(stat: &str) -> Option<LinuxStatFields> {
 #[cfg(feature = "linux-procfs")]
 fn parse_linux_rss_mb(status: &str) -> Option<f64> {
     for line in status.lines() {
-        let raw = line.strip_prefix("VmRSS:")?.trim();
-        let kb = raw.split_whitespace().next()?.parse::<f64>().ok()?;
-        return Some(kb / 1024.0);
+        if let Some(raw) = line.strip_prefix("VmRSS:") {
+            let kb = raw.trim().split_whitespace().next()?.parse::<f64>().ok()?;
+            return Some(kb / 1024.0);
+        }
     }
     None
 }
