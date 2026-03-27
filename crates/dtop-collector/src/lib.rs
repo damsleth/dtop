@@ -164,12 +164,23 @@ struct LinuxCollectorState {
     last_total_jiffies: Option<u64>,
     last_idle_jiffies: Option<u64>,
     last_proc_jiffies: HashMap<i32, u64>,
+    /// Cached jiffies from the most recent collect_processes call,
+    /// consumed by collect_system_stats to avoid reading /proc/stat twice.
+    cached_jiffies: Option<(u64, u64)>,
 }
 
 #[cfg(feature = "linux-procfs")]
 impl Collector for LinuxProcfsCollector {
     fn collect_processes(&self) -> io::Result<Vec<ProcessRecord>> {
-        collect_linux_procfs_processes(&self.state)
+        let (total_jiffies, idle_jiffies) = read_linux_total_and_idle_jiffies()?;
+        {
+            let mut guard = self
+                .state
+                .lock()
+                .map_err(|_| io::Error::other("linux collector state poisoned"))?;
+            guard.cached_jiffies = Some((total_jiffies, idle_jiffies));
+        }
+        collect_linux_procfs_processes(&self.state, total_jiffies)
     }
 
     fn collect_system_stats(&self) -> io::Result<Option<SystemStats>> {
@@ -541,8 +552,8 @@ fn sum_interface_totals(counters: &[InterfaceCounter]) -> (Option<u64>, Option<u
 #[cfg(feature = "linux-procfs")]
 fn collect_linux_procfs_processes(
     state: &Mutex<LinuxCollectorState>,
+    total_jiffies: u64,
 ) -> io::Result<Vec<ProcessRecord>> {
-    let (total_jiffies, _) = read_linux_total_and_idle_jiffies()?;
     let mut entries = Vec::new();
     let mut proc_jiffies_now: HashMap<i32, u64> = HashMap::new();
 
@@ -624,7 +635,15 @@ fn collect_linux_procfs_processes(
 fn collect_linux_system_stats(
     state: &Mutex<LinuxCollectorState>,
 ) -> io::Result<Option<SystemStats>> {
-    let (total_jiffies, idle_jiffies) = read_linux_total_and_idle_jiffies()?;
+    let (total_jiffies, idle_jiffies) = {
+        let guard = state
+            .lock()
+            .map_err(|_| io::Error::other("linux collector state poisoned"))?;
+        match guard.cached_jiffies {
+            Some(j) => j,
+            None => read_linux_total_and_idle_jiffies()?,
+        }
+    };
     let meminfo = fs::read_to_string("/proc/meminfo")?;
     let loadavg = fs::read_to_string("/proc/loadavg")?;
     let uptime_raw = fs::read_to_string("/proc/uptime")?;
