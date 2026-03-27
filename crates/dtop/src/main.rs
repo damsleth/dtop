@@ -969,7 +969,7 @@ impl App {
         self.previous_command_totals = next_previous;
         self.pids_by_command = refreshed_pids;
 
-        sort_processes(&mut proc_list, self.sort_state.clone(), self.lazy_mode);
+        sort_processes(&mut proc_list, &self.sort_state, self.lazy_mode);
         self.current_processes = proc_list;
     }
 
@@ -1129,7 +1129,7 @@ impl App {
     }
 }
 
-fn sort_processes(processes: &mut [ProcEntry], sort_state: SortState, lazy_mode: bool) {
+fn sort_processes(processes: &mut [ProcEntry], sort_state: &SortState, lazy_mode: bool) {
     match sort_state.by {
         SortBy::Cpu => {
             if lazy_mode {
