@@ -155,6 +155,7 @@ struct SamplerPacket {
     interfaces: Vec<InterfaceCounter>,
     poll_ms: f64,
     parse_ms: f64,
+    collection_error: Option<String>,
 }
 
 trait ProcessController: Send {
@@ -740,6 +741,7 @@ impl App {
     fn apply_packet(&mut self, packet: SamplerPacket) {
         self.last_poll_ms = packet.poll_ms;
         self.last_parse_ms = packet.parse_ms;
+        self.status_error = packet.collection_error;
 
         if let Some(system) = packet.system {
             self.apply_system_stats(packet.captured_at, system);
@@ -1946,9 +1948,18 @@ fn start_sampler_thread(
             let loop_start = Instant::now();
 
             let collect_start = Instant::now();
-            let processes = collector.collect_processes().unwrap_or_default();
+            let mut collection_error = None;
+            let processes = collector.collect_processes().unwrap_or_else(|e| {
+                collection_error = Some(format!("process collection: {e}"));
+                Vec::new()
+            });
             let system = collector.collect_system_stats().ok().flatten();
-            let interfaces = collector.collect_network_interfaces().unwrap_or_default();
+            let interfaces = collector.collect_network_interfaces().unwrap_or_else(|e| {
+                if collection_error.is_none() {
+                    collection_error = Some(format!("network collection: {e}"));
+                }
+                Vec::new()
+            });
             let poll_ms = collect_start.elapsed().as_secs_f64() * 1000.0;
 
             let packet = SamplerPacket {
@@ -1958,6 +1969,7 @@ fn start_sampler_thread(
                 interfaces,
                 poll_ms,
                 parse_ms: 0.0,
+                collection_error,
             };
 
             match tx.try_send(packet) {
@@ -2003,6 +2015,7 @@ fn run_snapshot_once(
         interfaces,
         poll_ms: start.elapsed().as_secs_f64() * 1000.0,
         parse_ms: 0.0,
+        collection_error: None,
     };
     app.apply_packet(packet);
 
@@ -2198,6 +2211,7 @@ mod tests {
             interfaces: Vec::new(),
             poll_ms: 1.0,
             parse_ms: 0.0,
+            collection_error: None,
         };
         app.apply_packet(first);
         assert_eq!(app.current_processes.len(), 1);
@@ -2218,6 +2232,7 @@ mod tests {
             interfaces: Vec::new(),
             poll_ms: 1.0,
             parse_ms: 0.0,
+            collection_error: None,
         };
         app.apply_packet(second);
 
