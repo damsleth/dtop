@@ -29,12 +29,12 @@ impl CollectorBackend {
     }
 
     fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "mac-ps" => Some(CollectorBackend::MacPs),
+        let all = [
+            CollectorBackend::MacPs,
             #[cfg(feature = "linux-procfs")]
-            "linux-procfs" => Some(CollectorBackend::LinuxProcfs),
-            _ => None,
-        }
+            CollectorBackend::LinuxProcfs,
+        ];
+        all.into_iter().find(|b| b.as_str() == name)
     }
 }
 
@@ -212,14 +212,12 @@ fn select_backend(backend_override: Option<&str>) -> Result<CollectorBackend, St
 }
 
 fn available_backends() -> Vec<&'static str> {
-    #[cfg(feature = "linux-procfs")]
-    {
-        vec!["mac-ps", "linux-procfs"]
-    }
-    #[cfg(not(feature = "linux-procfs"))]
-    {
-        vec!["mac-ps"]
-    }
+    let all = [
+        CollectorBackend::MacPs,
+        #[cfg(feature = "linux-procfs")]
+        CollectorBackend::LinuxProcfs,
+    ];
+    all.iter().map(|b| b.as_str()).collect()
 }
 
 fn parse_ps_output(stdout: &str) -> Vec<ProcessRecord> {
