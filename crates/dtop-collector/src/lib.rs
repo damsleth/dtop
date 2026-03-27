@@ -714,11 +714,6 @@ fn collect_linux_system_stats(
 }
 
 #[cfg(feature = "linux-procfs")]
-fn parse_linux_stat_ppid(stat: &str) -> Option<i32> {
-    parse_linux_stat(stat).map(|s| s.ppid)
-}
-
-#[cfg(feature = "linux-procfs")]
 #[derive(Clone, Copy)]
 struct LinuxStatFields {
     ppid: i32,
