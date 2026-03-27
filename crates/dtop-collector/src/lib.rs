@@ -137,7 +137,10 @@ impl Collector for MacPsCollector {
     fn collect_network_interfaces(&self) -> io::Result<Vec<InterfaceCounter>> {
         let output = Command::new("netstat").args(["-ibn"]).output()?;
         if !output.status.success() {
-            return Ok(Vec::new());
+            return Err(io::Error::other(format!(
+                "netstat failed with status {}",
+                output.status
+            )));
         }
         Ok(parse_netstat_interface_counters(&String::from_utf8_lossy(
             &output.stdout,
