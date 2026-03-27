@@ -1933,7 +1933,29 @@ fn parse_key_spec(raw: &str) -> Result<(KeyCode, KeyModifiers, String), String> 
 }
 
 fn key_to_string(code: KeyCode, modifiers: KeyModifiers) -> String {
-    format!("{:?}-{:?}", modifiers, code)
+    let mut parts = String::new();
+    if modifiers.contains(KeyModifiers::CONTROL) {
+        parts.push_str("ctrl+");
+    }
+    if modifiers.contains(KeyModifiers::ALT) {
+        parts.push_str("alt+");
+    }
+    if modifiers.contains(KeyModifiers::SHIFT) {
+        parts.push_str("shift+");
+    }
+    match code {
+        KeyCode::Char(c) => parts.push(c),
+        KeyCode::Up => parts.push_str("up"),
+        KeyCode::Down => parts.push_str("down"),
+        KeyCode::Left => parts.push_str("left"),
+        KeyCode::Right => parts.push_str("right"),
+        KeyCode::PageUp => parts.push_str("pageup"),
+        KeyCode::PageDown => parts.push_str("pagedown"),
+        KeyCode::Enter => parts.push_str("enter"),
+        KeyCode::Esc => parts.push_str("esc"),
+        _ => parts.push_str(&format!("{code:?}")),
+    }
+    parts
 }
 
 fn start_sampler_thread(
@@ -2243,8 +2265,13 @@ mod tests {
 
     #[test]
     fn key_to_string_is_stable() {
-        let key = key_to_string(KeyCode::Char('q'), KeyModifiers::NONE);
-        assert!(key.contains("Char"));
+        assert_eq!(key_to_string(KeyCode::Char('q'), KeyModifiers::NONE), "q");
+        assert_eq!(
+            key_to_string(KeyCode::Char('r'), KeyModifiers::CONTROL),
+            "ctrl+r"
+        );
+        assert_eq!(key_to_string(KeyCode::Up, KeyModifiers::NONE), "up");
+        assert_eq!(key_to_string(KeyCode::PageDown, KeyModifiers::NONE), "pagedown");
     }
 
     #[test]
