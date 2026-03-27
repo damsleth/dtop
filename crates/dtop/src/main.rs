@@ -1165,7 +1165,7 @@ fn push_bounded_sample(history: &mut VecDeque<f64>, value: f64, max_len: usize) 
     }
 }
 
-fn draw_ui(f: &mut ratatui::Frame<'_>, app: &mut App) -> usize {
+fn draw_ui(f: &mut ratatui::Frame<'_>, app: &App) -> usize {
     let area = f.area();
     let mut y = area.y;
 
@@ -2048,7 +2048,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let render_start = Instant::now();
         let mut visible_rows = 0usize;
         terminal.draw(|f| {
-            visible_rows = draw_ui(f, &mut app);
+            visible_rows = draw_ui(f, &app);
         })?;
         app.last_render_ms = render_start.elapsed().as_secs_f64() * 1000.0;
 
