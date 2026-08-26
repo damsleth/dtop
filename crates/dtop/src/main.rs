@@ -578,10 +578,11 @@ impl App {
                 if graceful_then_force && signal != SignalChoice::Kill {
                     thread::sleep(Duration::from_millis(300));
                     for pid in &pids {
-                        if self.process_controller.is_alive(*pid) {
-                            if let Err(err) = self.process_controller.send_signal(*pid, SIGKILL) {
-                                errors.push(err.to_string());
-                            }
+                        if self.process_controller.is_alive(*pid)
+                            && let Err(err) =
+                                self.process_controller.send_signal(*pid, SIGKILL)
+                        {
+                            errors.push(err.to_string());
                         }
                     }
                 }
@@ -837,9 +838,7 @@ impl App {
             NetworkSortBy::Rx => rows.sort_by(|a, b| a.rx_bps.total_cmp(&b.rx_bps)),
             NetworkSortBy::Tx => rows.sort_by(|a, b| a.tx_bps.total_cmp(&b.tx_bps)),
             NetworkSortBy::Total => rows.sort_by(|a, b| a.total_bps.total_cmp(&b.total_bps)),
-            NetworkSortBy::Name => {
-                rows.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-            }
+            NetworkSortBy::Name => rows.sort_by_key(|r| r.name.to_lowercase()),
         }
         if self.network_sort_descending {
             rows.reverse();
@@ -1121,7 +1120,7 @@ fn sort_processes(processes: &mut [ProcEntry], sort_state: &SortState, lazy_mode
             }
         }
         SortBy::Name => {
-            processes.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            processes.sort_by_key(|p| p.name.to_lowercase());
         }
         SortBy::DiskRead => {
             processes.sort_by(|a, b| a.disk_read_bps.total_cmp(&b.disk_read_bps));
