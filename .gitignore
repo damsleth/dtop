@@ -11,4 +11,4 @@ Cargo.lock
 /target/
 # ignore TODO for now
 TODO.md
-/artifacts/
+**/artifacts/
